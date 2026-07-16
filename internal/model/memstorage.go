@@ -1,6 +1,9 @@
 package models
 
+import "sync"
+
 type MemStorage struct {
+	mu      sync.RWMutex
 	gauge   map[string]float64
 	counter map[string]int64
 }
@@ -26,4 +29,30 @@ func (m *MemStorage) AddCounter(name string, value int64) {
 		m.counter[name] = value
 	}
 	m.counter[name] = v + value
+}
+
+type MetricForAgent struct {
+	Name  string
+	Type  string
+	Value any
+}
+
+func (m *MemStorage) GetAllMetrics() []MetricForAgent {
+	var result []MetricForAgent
+
+	for name, value := range m.gauge {
+		result = append(result, MetricForAgent{Name: name, Type: Gauge, Value: value})
+	}
+
+	for name, value := range m.counter {
+		result = append(result, MetricForAgent{Name: name, Type: Counter, Value: value})
+	}
+
+	return result
+}
+
+func (m *MemStorage) GetCounter(name string) int64 {
+	m.mu.RLock()
+	defer m.mu.Unlock()
+	return m.counter[name]
 }
