@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -12,8 +13,8 @@ import (
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 )
 
-const pollInterval = 2
-const reportInterval = 10
+// const pollInterval = 2
+// const reportInterval = 10
 
 type Agent struct {
 	mu        sync.RWMutex
@@ -84,11 +85,24 @@ func (a *Agent) getPrevNumGC() int64 {
 	return v
 }
 
-func main() {
+var (
+	address        *string
+	reportInterval *time.Duration
+	pollInterval   *time.Duration
+)
 
-	agent := NewAgent("http://localhost:8080")
-	collectTicker := time.NewTicker(2 * time.Second)
-	sendTicker := time.NewTicker(4 * time.Second)
+func init() {
+	address = flag.String("a", "localhost:8080", "server address")
+	reportInterval = flag.Duration("r", 10*time.Second, "report interval")
+	pollInterval = flag.Duration("p", 2*time.Second, "poll interval")
+
+}
+
+func main() {
+	flag.Parse()
+	agent := NewAgent(*address)
+	collectTicker := time.NewTicker(*pollInterval)
+	sendTicker := time.NewTicker(*reportInterval)
 	client := http.Client{}
 
 	go func() {
