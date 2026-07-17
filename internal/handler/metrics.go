@@ -102,10 +102,18 @@ func (m *metrics) GetMetrics(w http.ResponseWriter, r *http.Request) {
 
 	switch metricType {
 	case models.Gauge:
-		val := m.storage.GetGauge(metricName)
+		val, ok := m.storage.GetGauge(metricName)
+		if !ok {
+			http.Error(w, "Gauge not found", http.StatusNotFound)
+			return
+		}
 		valueStr = strconv.FormatFloat(val, 'f', -1, 64)
 	case models.Counter:
-		val := m.storage.GetCounter(metricName)
+		val, ok := m.storage.GetCounter(metricName)
+		if !ok {
+			http.Error(w, "Counter not found", http.StatusNotFound)
+			return
+		}
 		valueStr = strconv.FormatInt(val, 10)
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)

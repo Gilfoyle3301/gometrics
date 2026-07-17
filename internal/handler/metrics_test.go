@@ -35,7 +35,9 @@ func TestUpdateMetrics(t *testing.T) {
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s *models.MemStorage) {
-				assert.Equal(t, 123.45, s.GetGauge("Alloc"))
+				val, ok := s.GetGauge("Alloc")
+				assert.True(t, ok)
+				assert.Equal(t, 123.45, val)
 			},
 		},
 		{
@@ -44,7 +46,9 @@ func TestUpdateMetrics(t *testing.T) {
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s *models.MemStorage) {
-				assert.Equal(t, int64(10), s.GetCounter("PollCount"))
+				val, ok := s.GetCounter("PollCount")
+				assert.True(t, ok)
+				assert.Equal(t, int64(10), val)
 			},
 		},
 		{
@@ -138,8 +142,8 @@ func TestGetMetrics(t *testing.T) {
 		{
 			name:       "missing gauge - current (buggy) behaviour",
 			vars:       map[string]string{"type": models.Gauge, "name": "DoesNotExist"},
-			wantStatus: http.StatusOK,
-			wantBody:   "0",
+			wantStatus: http.StatusNotFound,
+			wantBody:   "Gauge not found\n",
 		},
 	}
 

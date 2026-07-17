@@ -57,16 +57,20 @@ func (m *MemStorage) GetAllMetrics() []MetricRow {
 	return result
 }
 
-func (m *MemStorage) GetCounter(name string) int64 {
+func (m *MemStorage) GetCounter(name string) (int64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.counter[name]
+	v, ok := m.counter[name]
+
+	return v, ok
 }
 
-func (m *MemStorage) GetGauge(name string) float64 {
+func (m *MemStorage) GetGauge(name string) (float64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.gauge[name]
+	v, ok := m.gauge[name]
+
+	return v, ok
 }
 
 func MergeWithStrategy[K comparable, V any](dst, src map[K]V) map[K]V {

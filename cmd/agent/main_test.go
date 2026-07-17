@@ -54,11 +54,12 @@ func TestCollectMetricsPollCountAccumulates(t *testing.T) {
 	a := NewAgent("http://localhost:8080")
 
 	const iterations = 5
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		a.collectMetrics()
 	}
-
-	assert.EqualValues(t, iterations, a.storage.GetCounter("PollCount"))
+	pollCount, ok := a.storage.GetCounter("PollCount")
+	require.True(t, ok, "PollCount must be present")
+	assert.EqualValues(t, iterations, pollCount)
 }
 
 func TestSendMetricsSuccess(t *testing.T) {
