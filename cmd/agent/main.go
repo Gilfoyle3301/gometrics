@@ -24,7 +24,8 @@ type Agent struct {
 
 func NewAgent(url string) *Agent {
 	return &Agent{
-		server: url,
+		server:  url,
+		storage: new(models.MemStorage),
 	}
 }
 
@@ -71,18 +72,21 @@ func (a *Agent) collectMetrics() {
 	a.storage.AddCounter("NumGC", int64(m.NumGC)-a.storage.GetCounter("NumGC"))
 	a.storage.AddCounter("PollCount", 1)
 
+	slog.Info("Collect metrics done")
+
 }
 
 func main() {
 
 	agent := NewAgent("http://localhost:8080")
 	collectTicker := time.NewTicker(2 * time.Second)
-	sendTicker := time.NewTicker(10 * time.Second)
+	sendTicker := time.NewTicker(4 * time.Second)
 	client := http.Client{}
 
 	go func() {
 		for range collectTicker.C {
 			agent.collectMetrics()
+			slog.Info("update metrics done")
 		}
 	}()
 
@@ -96,6 +100,7 @@ func main() {
 					slog.Error("Failed send metrics", "metric", m.Name, "error", err)
 					continue
 				}
+
 				resp.Body.Close()
 			}
 		}
