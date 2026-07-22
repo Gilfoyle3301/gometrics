@@ -3,14 +3,19 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
+	"os"
 	"runtime"
 	"sync"
 	"time"
 
+	"github.com/Gilfoyle3301/gometrics/internal/agent"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
+	"github.com/caarlos0/env/v11"
 )
 
 // const pollInterval = 2
@@ -26,7 +31,7 @@ type Agent struct {
 func NewAgent(url string) *Agent {
 	return &Agent{
 		server:  url,
-		storage: new(models.MemStorage),
+		storage: models.NewMemStorage(),
 	}
 }
 
@@ -100,38 +105,84 @@ func init() {
 
 func main() {
 	flag.Parse()
-	agent := NewAgent(*address)
-	collectTicker := time.NewTicker(*pollInterval)
+
+	cfg := agent.NewConfig()
+	if err := env.Parse(cfg); err != nil {
+		slog.Error("failed to parse config", "error", err)
+		os.Exit(1)
+	}
+
+	address := valueOr(cfg.Address, "http://localhost:8080")
+	pollInterval := valueOr(cfg.PollInterval, 2*time.Second)
+	reportInterval := valueOr(cfg.ReportInterval, 10*time.Second)
+
+	if pollInterval <= 0 || reportInterval <= 0 {
+		slog.Error("intervals must be positive")
+		os.Exit(1)
+	}
+
+	a := NewAgent(address)
+
+	collectTicker := time.NewTicker(pollInterval)
 	defer collectTicker.Stop()
 
-	sendTicker := time.NewTicker(*reportInterval)
+	sendTicker := time.NewTicker(reportInterval)
 	defer sendTicker.Stop()
 
-	client := http.Client{}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
 
 	go func() {
 		for range collectTicker.C {
-			agent.collectMetrics()
-			slog.Info("update metrics done")
+			a.collectMetrics()
+			slog.Debug("metrics collected")
 		}
 	}()
 
 	go func() {
 		for range sendTicker.C {
-			metrics := agent.storage.GetAllMetrics()
+			metrics := a.storage.GetAllMetrics()
+
 			for _, m := range metrics {
-				url := fmt.Sprintf("%s/update/%s/%s/%v", agent.server, m.Type, m.Name, m.Value)
-				resp, err := client.Post(url, "text/plain", nil)
+				updateURL, err := url.JoinPath(
+					a.server,
+					"update",
+					m.Type,
+					m.Name,
+					fmt.Sprint(m.Value),
+				)
 				if err != nil {
-					slog.Error("Failed send metrics", "metric", m.Name, "error", err)
+					slog.Error("failed to build url", "metric", m.Name, "error", err)
 					continue
 				}
 
+				resp, err := client.Post(updateURL, "text/plain", nil)
+				if err != nil {
+					slog.Error("failed to send metric", "metric", m.Name, "error", err)
+					continue
+				}
+
+				_, _ = io.Copy(io.Discard, resp.Body)
 				resp.Body.Close()
+
+				if resp.StatusCode >= http.StatusBadRequest {
+					slog.Error(
+						"server returned bad status",
+						"metric", m.Name,
+						"status", resp.Status,
+					)
+				}
 			}
 		}
 	}()
 
 	select {}
+}
 
+func valueOr[T any](ptr *T, defaultValue T) T {
+	if ptr != nil {
+		return *ptr
+	}
+	return defaultValue
 }
