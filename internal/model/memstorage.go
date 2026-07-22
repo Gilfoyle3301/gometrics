@@ -11,8 +11,18 @@ type MemStorage struct {
 type Storage interface {
 	SetGauge(name string, value float64)
 	AddCounter(name string, value int64)
+	GetAllMetrics() []MetricRow
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
 }
 
+func NewMemStorage() *MemStorage {
+	return &MemStorage{
+		mu:      sync.RWMutex{},
+		gauge:   make(map[string]float64),
+		counter: make(map[string]int64),
+	}
+}
 func (m *MemStorage) SetGauge(name string, value float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -28,11 +38,7 @@ func (m *MemStorage) AddCounter(name string, value int64) {
 	if m.counter == nil {
 		m.counter = make(map[string]int64)
 	}
-	v, ok := m.counter[name]
-	if !ok {
-		m.counter[name] = value
-	}
-	m.counter[name] = v + value
+	m.counter[name] += value
 }
 
 type MetricRow struct {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Gilfoyle3301/gometrics/internal/handler"
+	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/gorilla/mux"
 )
 
@@ -13,7 +14,7 @@ func main() {
 	flag.Parse()
 
 	r := mux.NewRouter()
-	handle := handler.New()
+	handle := handler.New(models.NewMemStorage())
 	r.HandleFunc("/update/{type}/{name}/{value}", handle.UpdateMetrics).Methods("POST")
 	r.HandleFunc("/value/{type}/{name}", handle.GetMetrics).Methods("GET")
 	r.HandleFunc("/", handle.MainPage).Methods("GET")

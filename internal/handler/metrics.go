@@ -26,11 +26,11 @@ type PageData struct {
 }
 
 type metrics struct {
-	storage *models.MemStorage
+	storage models.Storage
 }
 
-func New() metrics {
-	return metrics{storage: new(models.MemStorage)}
+func New(s models.Storage) metrics {
+	return metrics{storage: s}
 }
 
 func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {

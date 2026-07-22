@@ -102,7 +102,11 @@ func main() {
 	flag.Parse()
 	agent := NewAgent(*address)
 	collectTicker := time.NewTicker(*pollInterval)
+	defer collectTicker.Stop()
+
 	sendTicker := time.NewTicker(*reportInterval)
+	defer sendTicker.Stop()
+
 	client := http.Client{}
 
 	go func() {

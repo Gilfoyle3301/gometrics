@@ -22,19 +22,20 @@ func newRequest(method, target string, vars map[string]string, contentType strin
 }
 
 func TestUpdateMetrics(t *testing.T) {
+	strg := models.NewMemStorage()
 	tests := []struct {
 		name        string
 		vars        map[string]string
 		contentType string
 		wantStatus  int
-		check       func(t *testing.T, s *models.MemStorage)
+		check       func(t *testing.T, s models.Storage)
 	}{
 		{
 			name:        "valid gauge",
 			vars:        map[string]string{"type": models.Gauge, "name": "Alloc", "value": "123.45"},
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
-			check: func(t *testing.T, s *models.MemStorage) {
+			check: func(t *testing.T, s models.Storage) {
 				val, ok := s.GetGauge("Alloc")
 				assert.True(t, ok)
 				assert.Equal(t, 123.45, val)
@@ -45,7 +46,7 @@ func TestUpdateMetrics(t *testing.T) {
 			vars:        map[string]string{"type": models.Counter, "name": "PollCount", "value": "10"},
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
-			check: func(t *testing.T, s *models.MemStorage) {
+			check: func(t *testing.T, s models.Storage) {
 				val, ok := s.GetCounter("PollCount")
 				assert.True(t, ok)
 				assert.Equal(t, int64(10), val)
@@ -97,7 +98,7 @@ func TestUpdateMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := New()
+			h := New(strg)
 			req := newRequest(http.MethodPost, "/update", tt.vars, tt.contentType)
 			w := httptest.NewRecorder()
 
@@ -112,7 +113,7 @@ func TestUpdateMetrics(t *testing.T) {
 }
 
 func TestGetMetrics(t *testing.T) {
-	h := New()
+	h := New(models.NewMemStorage())
 	h.storage.SetGauge("Alloc", 42.5)
 	h.storage.AddCounter("PollCount", 7)
 
@@ -164,7 +165,7 @@ func TestGetMetrics(t *testing.T) {
 
 func TestMainPage(t *testing.T) {
 	t.Run("renders empty state", func(t *testing.T) {
-		h := New()
+		h := New(models.NewMemStorage())
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
 
@@ -175,7 +176,7 @@ func TestMainPage(t *testing.T) {
 	})
 
 	t.Run("renders metrics sorted by name", func(t *testing.T) {
-		h := New()
+		h := New(models.NewMemStorage())
 		h.storage.SetGauge("Zeta", 1.1)
 		h.storage.SetGauge("Alpha", 2.2)
 		h.storage.AddCounter("PollCount", 3)
