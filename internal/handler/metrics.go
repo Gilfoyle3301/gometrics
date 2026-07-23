@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -98,7 +100,7 @@ func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 func (m *metrics) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 
 	mtr := new(models.Metrics)
-	if w.Header().Get("Content-Type") != "application/json" {
+	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
@@ -114,10 +116,18 @@ func (m *metrics) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 
 	switch mtr.MType {
 	case models.Gauge:
+		if mtr.Value == nil {
+			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
+			return
+		}
 		m.storage.SetGauge(mtr.ID, *mtr.Value)
 
 	case models.Counter:
-		m.storage.AddCounter(mtr.ID, int64(*mtr.Value))
+		if mtr.Delta == nil {
+			http.Error(w, "Invalid counter delta", http.StatusBadRequest)
+			return
+		}
+		m.storage.AddCounter(mtr.ID, *mtr.Delta)
 
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
@@ -165,13 +175,25 @@ func (m *metrics) GetMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
 
-	if w.Header().Get("Content-Type") != "application/json" {
+	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Content-Type header not set to application/json", http.StatusBadRequest)
 		return
 	}
 
+	var body io.Reader = r.Body
+
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to create gzip reader", http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		body = gz
+	}
+
 	mtr := new(models.GetMetrics)
-	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
+	if err := json.NewDecoder(body).Decode(mtr); err != nil {
 		http.Error(w, "Invalid metric data", http.StatusBadRequest)
 		return
 	}
@@ -202,7 +224,9 @@ func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		m.logger.Error("failed to encode response: %v", err)
+		if m.logger != nil {
+			m.logger.Error("failed to encode response: %v", err)
+		}
 	}
 
 }

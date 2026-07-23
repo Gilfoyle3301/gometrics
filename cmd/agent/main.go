@@ -1,8 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
-	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -90,6 +91,63 @@ func (a *Agent) getPrevNumGC() int64 {
 	return v
 }
 
+func (a *Agent) reportMetrics(client *http.Client) {
+	metrics := a.storage.GetAllMetrics()
+
+	for _, m := range metrics {
+		updateURL, err := url.JoinPath(
+			a.server,
+			"update",
+		)
+		if err != nil {
+			slog.Error("failed to build url", "metric", m.Name, "error", err)
+			continue
+		}
+		metric := models.Metrics{ID: m.Name, MType: m.Type}
+		switch m.Type {
+		case models.Gauge:
+			value, ok := m.Value.(float64)
+			if !ok {
+				slog.Error("invalid gauge value", "metric", m.Name)
+				continue
+			}
+			metric.Value = &value
+		case models.Counter:
+			delta, ok := m.Value.(int64)
+			if !ok {
+				slog.Error("invalid counter value", "metric", m.Name)
+				continue
+			}
+			metric.Delta = &delta
+		default:
+			slog.Error("invalid metric type", "metric", m.Name, "type", m.Type)
+			continue
+		}
+
+		v, e := json.Marshal(metric)
+		if e != nil {
+			slog.Error("failed to marshal metric", "metric", m.Name, "error", e)
+			continue
+		}
+		resp, err := client.Post(updateURL, "application/json", bytes.NewBuffer(v))
+		if err != nil {
+			slog.Error("failed to send metric", "metric", m.Name, "error", err)
+			continue
+		}
+
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= http.StatusBadRequest {
+			slog.Error(
+				"server returned bad status",
+				"metric", m.Name,
+				"status", resp.Status,
+			)
+		}
+	}
+}
+
 var (
 	address        *string
 	reportInterval *time.Duration
@@ -97,7 +155,7 @@ var (
 )
 
 func init() {
-	address = flag.String("a", "localhost:8080", "server address")
+	address = flag.String("a", "http://localhost:8080", "server address")
 	reportInterval = flag.Duration("r", 10*time.Second, "report interval")
 	pollInterval = flag.Duration("p", 2*time.Second, "poll interval")
 
@@ -112,9 +170,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	address := valueOr(cfg.Address, "http://localhost:8080")
-	pollInterval := valueOr(cfg.PollInterval, 2*time.Second)
-	reportInterval := valueOr(cfg.ReportInterval, 10*time.Second)
+	address := valueOr(cfg.Address, *address)
+	pollInterval := valueOr(cfg.PollInterval, *pollInterval)
+	reportInterval := valueOr(cfg.ReportInterval, *reportInterval)
 
 	if pollInterval <= 0 || reportInterval <= 0 {
 		slog.Error("intervals must be positive")
@@ -136,44 +194,12 @@ func main() {
 	go func() {
 		for range collectTicker.C {
 			a.collectMetrics()
-			slog.Debug("metrics collected")
 		}
 	}()
 
 	go func() {
 		for range sendTicker.C {
-			metrics := a.storage.GetAllMetrics()
-
-			for _, m := range metrics {
-				updateURL, err := url.JoinPath(
-					a.server,
-					"update",
-					m.Type,
-					m.Name,
-					fmt.Sprint(m.Value),
-				)
-				if err != nil {
-					slog.Error("failed to build url", "metric", m.Name, "error", err)
-					continue
-				}
-
-				resp, err := client.Post(updateURL, "text/plain", nil)
-				if err != nil {
-					slog.Error("failed to send metric", "metric", m.Name, "error", err)
-					continue
-				}
-
-				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
-
-				if resp.StatusCode >= http.StatusBadRequest {
-					slog.Error(
-						"server returned bad status",
-						"metric", m.Name,
-						"status", resp.Status,
-					)
-				}
-			}
+			a.reportMetrics(client)
 		}
 	}()
 

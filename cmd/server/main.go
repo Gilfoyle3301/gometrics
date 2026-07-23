@@ -23,11 +23,11 @@ func main() {
 	r := mux.NewRouter()
 	handle := handler.New(models.NewMemStorage())
 	r.Handle("/update/{type}/{name}/{value}", middleware.LoggerMiddlware(http.HandlerFunc(handle.UpdateMetrics), sg)).Methods("POST")
-	r.Handle("/update", middleware.LoggerMiddlware(http.HandlerFunc(handle.UpdateMetrics), sg)).Methods("POST")
+	r.Handle("/update", middleware.LoggerMiddlware(http.HandlerFunc(handle.UpdateMetric), sg)).Methods("POST")
 	r.Handle("/value/{type}/{name}", middleware.LoggerMiddlware(http.HandlerFunc(handle.GetMetrics), sg)).Methods("GET")
 	r.Handle("/value", middleware.LoggerMiddlware(http.HandlerFunc(handle.GetMetric), sg)).Methods("POST")
 	r.Handle("/", middleware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
-	if err := http.ListenAndServe(*addr, r); err != nil {
+	if err := http.ListenAndServe(*addr, middleware.GunZipMiddleware(r)); err != nil {
 		panic("ohhoh")
 	}
 }

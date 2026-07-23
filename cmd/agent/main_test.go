@@ -1,16 +1,15 @@
 package main
 
 import (
-	"fmt"
-	"log/slog"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,22 +61,42 @@ func TestCollectMetricsPollCountAccumulates(t *testing.T) {
 	assert.EqualValues(t, iterations, pollCount)
 }
 
+func TestDefaultAddressHasScheme(t *testing.T) {
+	assert.Equal(t, "http://localhost:8080", *address)
+}
+
 func TestSendMetricsSuccess(t *testing.T) {
 	var (
-		mu        sync.Mutex
-		gotPaths  []string
-		urlRegexp = regexp.MustCompile(`^/update/(gauge|counter)/[^/]+/[^/]+$`)
+		mu           sync.Mutex
+		requestCount int
+		gaugeCount   int
+		counterCount int
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		gotPaths = append(gotPaths, r.URL.Path)
-		mu.Unlock()
+		defer mu.Unlock()
 
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "text/plain", r.Header.Get("Content-Type"))
-		assert.Regexp(t, urlRegexp, r.URL.Path)
+		assert.Equal(t, "/update", r.URL.Path)
+		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
+		var m models.Metrics
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&m))
+		switch m.MType {
+		case models.Gauge:
+			require.NotNil(t, m.Value)
+			assert.Nil(t, m.Delta)
+			gaugeCount++
+		case models.Counter:
+			require.NotNil(t, m.Delta)
+			assert.Nil(t, m.Value)
+			counterCount++
+		default:
+			t.Fatalf("unknown metric type %q", m.MType)
+		}
+
+		requestCount++
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -89,21 +108,13 @@ func TestSendMetricsSuccess(t *testing.T) {
 	require.Greater(t, expectedCount, 0)
 
 	client := &http.Client{Timeout: time.Second}
-	metrics := a.storage.GetAllMetrics()
-	for _, m := range metrics {
-		url := fmt.Sprintf("%s/update/%s/%s/%v", a.server, m.Type, m.Name, m.Value)
+	a.reportMetrics(client)
 
-		resp, err := client.Post(url, "text/plain", nil)
-		if err != nil {
-			slog.Error("failed to send metric", "metric", m.Name, "error", err)
-			continue
-		}
-		slog.Info("metric sent", "url", url, "status", resp.Status)
-		resp.Body.Close()
-	}
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Len(t, gotPaths, expectedCount, "expected one request per collected metric")
+	assert.Equal(t, expectedCount, requestCount, "expected one request per collected metric")
+	assert.Greater(t, gaugeCount, 0)
+	assert.Greater(t, counterCount, 0)
 }
 
 func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
@@ -122,18 +133,7 @@ func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 
 	assert.NotPanics(t, func() {
-		metrics := a.storage.GetAllMetrics()
-		for _, m := range metrics {
-			url := fmt.Sprintf("%s/update/%s/%s/%v", a.server, m.Type, m.Name, m.Value)
-
-			resp, err := client.Post(url, "text/plain", nil)
-			if err != nil {
-				slog.Error("failed to send metric", "metric", m.Name, "error", err)
-				continue
-			}
-			slog.Info("metric sent", "url", url, "status", resp.Status)
-			resp.Body.Close()
-		}
+		a.reportMetrics(client)
 	})
 
 	assert.EqualValues(t, expectedCount, requestCount.Load(),
@@ -153,18 +153,7 @@ func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
 	client := &http.Client{Timeout: 1 * time.Millisecond}
 
 	assert.NotPanics(t, func() {
-		metrics := a.storage.GetAllMetrics()
-		for _, m := range metrics {
-			url := fmt.Sprintf("%s/update/%s/%s/%v", a.server, m.Type, m.Name, m.Value)
-
-			resp, err := client.Post(url, "text/plain", nil)
-			if err != nil {
-				slog.Error("failed to send metric", "metric", m.Name, "error", err)
-				continue
-			}
-			slog.Info("metric sent", "url", url, "status", resp.Status)
-			resp.Body.Close()
-		}
+		a.reportMetrics(client)
 	})
 }
 
@@ -200,18 +189,7 @@ func TestAgentConcurrentCollectAndSend(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				metrics := a.storage.GetAllMetrics()
-				for _, m := range metrics {
-					url := fmt.Sprintf("%s/update/%s/%s/%v", a.server, m.Type, m.Name, m.Value)
-
-					resp, err := client.Post(url, "text/plain", nil)
-					if err != nil {
-						slog.Error("failed to send metric", "metric", m.Name, "error", err)
-						continue
-					}
-					slog.Info("metric sent", "url", url, "status", resp.Status)
-					resp.Body.Close()
-				}
+				a.reportMetrics(client)
 			}
 		}
 	}()

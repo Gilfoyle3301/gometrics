@@ -1,6 +1,9 @@
 package handler
 
 import (
+	"bytes"
+	"compress/gzip"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,6 +113,119 @@ func TestUpdateMetrics(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUpdateMetric(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+		wantStatus  int
+		check       func(t *testing.T, s models.Storage)
+	}{
+		{
+			name:        "valid gauge",
+			body:        `{"id":"Alloc","type":"gauge","value":123.45}`,
+			contentType: "application/json",
+			wantStatus:  http.StatusOK,
+			check: func(t *testing.T, s models.Storage) {
+				val, ok := s.GetGauge("Alloc")
+				assert.True(t, ok)
+				assert.Equal(t, 123.45, val)
+			},
+		},
+		{
+			name:        "valid counter",
+			body:        `{"id":"PollCount","type":"counter","delta":10}`,
+			contentType: "application/json",
+			wantStatus:  http.StatusOK,
+			check: func(t *testing.T, s models.Storage) {
+				val, ok := s.GetCounter("PollCount")
+				assert.True(t, ok)
+				assert.Equal(t, int64(10), val)
+			},
+		},
+		{
+			name:        "missing gauge value",
+			body:        `{"id":"Alloc","type":"gauge"}`,
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+		},
+		{
+			name:        "missing counter delta",
+			body:        `{"id":"PollCount","type":"counter"}`,
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+		},
+		{
+			name:        "invalid content type",
+			body:        `{"id":"Alloc","type":"gauge","value":123.45}`,
+			contentType: "text/plain",
+			wantStatus:  http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := New(models.NewMemStorage())
+			req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewBufferString(tt.body))
+			req.Header.Set("Content-Type", tt.contentType)
+			w := httptest.NewRecorder()
+
+			h.UpdateMetric(w, req)
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, h.storage)
+			}
+		})
+	}
+}
+
+func TestGetMetricGzip(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	_, err := gz.Write([]byte(`{"id":"Alloc","type":"gauge"}`))
+	require.NoError(t, err)
+	require.NoError(t, gz.Close())
+
+	h := New(models.NewMemStorage())
+	h.storage.SetGauge("Alloc", 42.5)
+	req := httptest.NewRequest(http.MethodPost, "/value", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+	w := httptest.NewRecorder()
+
+	h.GetMetric(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"value":42.5`)
+}
+
+type failWriter struct {
+	header http.Header
+}
+
+func (f *failWriter) Header() http.Header {
+	return f.header
+}
+
+func (f *failWriter) WriteHeader(status int) {}
+
+func (f *failWriter) Write(b []byte) (int, error) {
+	return 0, errors.New("write failed")
+}
+
+func TestGetMetricEncodeErrorWithNilLoggerDoesNotPanic(t *testing.T) {
+	h := New(models.NewMemStorage())
+	h.storage.SetGauge("Alloc", 42.5)
+	req := httptest.NewRequest(http.MethodPost, "/value", bytes.NewBufferString(`{"id":"Alloc","type":"gauge"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := &failWriter{header: make(http.Header)}
+
+	assert.NotPanics(t, func() {
+		h.GetMetric(w, req)
+	})
 }
 
 func TestGetMetrics(t *testing.T) {
