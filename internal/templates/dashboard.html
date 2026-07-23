@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GoMetrics Dashboard</title>
+<style>
+    * { box-sizing: border-box; }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        margin: 0;
+        padding: 40px 20px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+
+    h1 {
+        color: #fff;
+        text-align: center;
+        margin-bottom: 6px;
+        font-size: 2.4rem;
+        text-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .subtitle {
+        text-align: center;
+        color: rgba(255,255,255,0.85);
+        margin-bottom: 30px;
+        font-size: 0.95rem;
+    }
+
+    .stats-row {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+        margin-bottom: 30px;
+    }
+    .stat-card {
+        background: rgba(255,255,255,0.15);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 14px;
+        padding: 18px 20px;
+        color: #fff;
+    }
+    .stat-card .label {
+        font-size: 0.8rem;
+        opacity: 0.85;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .stat-card .value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        margin-top: 4px;
+    }
+
+    .panel {
+        background: #fff;
+        border-radius: 18px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        overflow: hidden;
+    }
+
+    .toolbar {
+        display: flex;
+        gap: 12px;
+        padding: 20px;
+        border-bottom: 1px solid #eef1f5;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+    .search-box { flex: 1; min-width: 200px; position: relative; }
+    .search-box input {
+        width: 100%;
+        padding: 10px 14px 10px 38px;
+        border: 1px solid #dfe4ea;
+        border-radius: 10px;
+        font-size: 0.95rem;
+        outline: none;
+        transition: border-color 0.2s;
+    }
+    .search-box input:focus { border-color: #764ba2; }
+    .search-box::before {
+        content: "🔍";
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 0.9rem;
+    }
+
+    .filter-btn {
+        padding: 9px 16px;
+        border: 1px solid #dfe4ea;
+        background: #f8f9fb;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 0.9rem;
+        color: #555;
+        transition: all 0.2s;
+    }
+    .filter-btn.active { background: #764ba2; color: #fff; border-color: #764ba2; }
+    .filter-btn:hover:not(.active) { background: #eef0f4; }
+
+    .refresh-btn {
+        padding: 9px 16px;
+        border: none;
+        background: #667eea;
+        color: #fff;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 600;
+        transition: background 0.2s;
+    }
+    .refresh-btn:hover { background: #5a67d8; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 14px 20px; text-align: left; border-bottom: 1px solid #f0f2f5; }
+    th {
+        background-color: #fafbfc;
+        color: #6b7280;
+        font-weight: 600;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.6px;
+    }
+    tr { transition: background 0.15s; }
+    tr:hover { background-color: #f8faff; }
+    tr:last-child td { border-bottom: none; }
+    tr.hidden { display: none; }
+
+    .metric-name {
+        font-family: 'SF Mono', Consolas, monospace;
+        font-size: 0.9rem;
+        color: #2c3e50;
+    }
+
+    .badge {
+        display: inline-block;
+        padding: 4px 12px;
+        border-radius: 20px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+    }
+    .badge.gauge { background: #e8f8f0; color: #27ae60; }
+    .badge.counter { background: #e8f2fc; color: #2980b9; }
+
+    .value-cell { font-weight: 600; color: #2c3e50; }
+
+    .empty-state {
+        text-align: center;
+        color: #999;
+        padding: 40px;
+        display: none;
+    }
+
+    footer {
+        text-align: center;
+        color: rgba(255,255,255,0.75);
+        margin-top: 20px;
+        font-size: 0.85rem;
+    }
+
+    @media (max-width: 600px) {
+        .toolbar { flex-direction: column; align-items: stretch; }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>📊 GoMetrics Dashboard</h1>
+    <p class="subtitle">Мониторинг метрик приложения в реальном времени</p>
+
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="label">Всего метрик</div>
+            <div class="value">{{.Total}}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Gauge</div>
+            <div class="value">{{.GaugeCount}}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Counter</div>
+            <div class="value">{{.CounterCount}}</div>
+        </div>
+        <div class="stat-card">
+            <div class="label">Статус</div>
+            <div class="value">🟢 Online</div>
+        </div>
+    </div>
+
+    <div class="panel">
+        <div class="toolbar">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Поиск по имени метрики...">
+            </div>
+            <button class="filter-btn active" data-filter="all">Все</button>
+            <button class="filter-btn" data-filter="gauge">Gauge</button>
+            <button class="filter-btn" data-filter="counter">Counter</button>
+            <button class="refresh-btn" onclick="location.reload()">↻ Обновить</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Metric Name</th>
+                    <th>Type</th>
+                    <th>Value</th>
+                </tr>
+            </thead>
+            <tbody id="metricsBody">
+                {{range .Metrics}}
+                <tr data-type="{{.Type}}" data-name="{{.Name}}">
+                    <td class="metric-name">{{.Name}}</td>
+                    <td>
+                        {{if eq .Type "gauge"}}
+                            <span class="badge gauge">GAUGE</span>
+                        {{else}}
+                            <span class="badge counter">COUNTER</span>
+                        {{end}}
+                    </td>
+                    <td class="value-cell">{{.Value}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        <div class="empty-state" id="emptyState">Метрики не найдены</div>
+    </div>
+
+    <footer>Обновлено: <span id="updateTime"></span></footer>
+</div>
+
+<script>
+    document.getElementById('updateTime').textContent = new Date().toLocaleString('ru-RU');
+
+    const rows = Array.from(document.querySelectorAll('#metricsBody tr'));
+    const emptyState = document.getElementById('emptyState');
+    let currentFilter = 'all';
+
+    function applyFilters() {
+        const search = document.getElementById('searchInput').value.toLowerCase();
+        let visibleCount = 0;
+
+        rows.forEach(row => {
+            const type = row.dataset.type;
+            const name = row.dataset.name.toLowerCase();
+            const matchType = currentFilter === 'all' || type === currentFilter;
+            const matchSearch = name.includes(search);
+            const show = matchType && matchSearch;
+            row.classList.toggle('hidden', !show);
+            if (show) visibleCount++;
+        });
+
+        emptyState.style.display = visibleCount === 0 ? 'block' : 'none';
+    }
+
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelector('.filter-btn.active').classList.remove('active');
+            btn.classList.add('active');
+            currentFilter = btn.dataset.filter;
+            applyFilters();
+        });
+    });
+
+    document.getElementById('searchInput').addEventListener('input', applyFilters);
+</script>
+</body>
+</html>
