@@ -206,6 +206,7 @@ func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.ID = mtr.ID
+		out.MType = mtr.MType
 		out.Value = &val
 
 	case models.Counter:
@@ -215,6 +216,7 @@ func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.ID = mtr.ID
+		out.MType = mtr.MType
 		out.Delta = &val
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)

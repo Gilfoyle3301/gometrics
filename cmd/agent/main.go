@@ -75,20 +75,12 @@ func (a *Agent) collectMetrics() {
 	a.storage.SetGauge("StackSys", float64(m.StackSys))
 	a.storage.SetGauge("Sys", float64(m.Sys))
 	a.storage.SetGauge("TotalAlloc", float64(m.TotalAlloc))
+	a.storage.SetGauge("NumGC", float64(m.NumGC))
 	a.storage.SetGauge("RandomValue", rand.Float64())
-	a.storage.AddCounter("NumGC", int64(m.NumGC)-a.getPrevNumGC())
 	a.storage.AddCounter("PollCount", 1)
 
 	slog.Info("Collect metrics done")
 
-}
-
-func (a *Agent) getPrevNumGC() int64 {
-	v, ok := a.storage.GetCounter("NumGC")
-	if !ok {
-		return 0
-	}
-	return v
 }
 
 func (a *Agent) reportMetrics(client *http.Client) {
@@ -144,6 +136,14 @@ func (a *Agent) reportMetrics(client *http.Client) {
 				"metric", m.Name,
 				"status", resp.Status,
 			)
+			continue
+		}
+
+		if m.Type == models.Counter {
+			delta, ok := m.Value.(int64)
+			if ok {
+				a.storage.AddCounter(m.Name, delta)
+			}
 		}
 	}
 }

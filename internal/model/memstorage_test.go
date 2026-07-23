@@ -40,6 +40,24 @@ func TestMemStorageGetAllMetrics(t *testing.T) {
 	require.Len(t, metrics, 2)
 }
 
+func TestMemStorageRestore(t *testing.T) {
+	s := NewMemStorage()
+	data := []byte(`[
+		{"id":"Alloc","type":"gauge","value":1.5},
+		{"id":"PollCount","type":"counter","delta":3}
+	]`)
+
+	require.NoError(t, s.Restore(data))
+
+	gauge, ok := s.GetGauge("Alloc")
+	require.True(t, ok)
+	assert.Equal(t, 1.5, gauge)
+
+	counter, ok := s.GetCounter("PollCount")
+	require.True(t, ok)
+	assert.Equal(t, int64(3), counter)
+}
+
 func TestResponseRecorder(t *testing.T) {
 	w := httptest.NewRecorder()
 	rec := &ResponseRecorder{ResponseWriter: w, Status: http.StatusOK}

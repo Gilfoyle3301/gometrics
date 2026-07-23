@@ -199,6 +199,7 @@ func TestGetMetricGzip(t *testing.T) {
 	h.GetMetric(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"type":"gauge"`)
 	assert.Contains(t, w.Body.String(), `"value":42.5`)
 }
 
