@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Gilfoyle3301/gometrics/internal/config/server"
@@ -28,7 +29,7 @@ var (
 
 func init() {
 	storeInterval = flag.Duration("i", time.Second*300, "time interval save to file")
-	fileStoragePath = flag.String("s", "/opt/metrics_server/metrics", "path save metrics")
+	fileStoragePath = flag.String("s", "/tmp/metrics-db.json", "path save metrics")
 	restore = flag.Bool("r", false, "restore metrics from file")
 	address = flag.String("a", "localhost:8080", "server address")
 
@@ -51,6 +52,11 @@ func main() {
 
 	if saveInterval < 0 {
 		slog.Error("store interval must not be negative")
+		os.Exit(1)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
+		slog.Error("failed to create storage directory", "error", err)
 		os.Exit(1)
 	}
 
