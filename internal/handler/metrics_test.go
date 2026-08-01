@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Gilfoyle3301/gometrics/internal/middlware"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 )
 
@@ -196,7 +197,7 @@ func TestGetMetricGzip(t *testing.T) {
 	req.Header.Set("Content-Encoding", "gzip")
 	w := httptest.NewRecorder()
 
-	h.GetMetric(w, req)
+	middlware.Decompress(http.HandlerFunc(h.GetMetric)).ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Body.String(), `"type":"gauge"`)
