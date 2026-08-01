@@ -16,6 +16,7 @@ import (
 
 	"github.com/Gilfoyle3301/gometrics/internal/agent"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
+	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/caarlos0/env/v11"
 )
 
@@ -140,10 +141,7 @@ func (a *Agent) reportMetrics(client *http.Client) {
 		}
 
 		if m.Type == models.Counter {
-			delta, ok := m.Value.(int64)
-			if ok {
-				a.storage.AddCounter(m.Name, delta)
-			}
+			a.storage.SetCounter(m.Name, 0)
 		}
 	}
 }
@@ -170,9 +168,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	address := valueOr(cfg.Address, *address)
-	pollInterval := valueOr(cfg.PollInterval, *pollInterval)
-	reportInterval := valueOr(cfg.ReportInterval, *reportInterval)
+	address := shared.ValueOr(cfg.Address, *address)
+	pollInterval := shared.ValueOr(cfg.PollInterval, *pollInterval)
+	reportInterval := shared.ValueOr(cfg.ReportInterval, *reportInterval)
 
 	if pollInterval <= 0 || reportInterval <= 0 {
 		slog.Error("intervals must be positive")
@@ -204,11 +202,4 @@ func main() {
 	}()
 
 	select {}
-}
-
-func valueOr[T any](ptr *T, defaultValue T) T {
-	if ptr != nil {
-		return *ptr
-	}
-	return defaultValue
 }

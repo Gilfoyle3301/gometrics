@@ -1,4 +1,4 @@
-package middleware
+package middlware
 
 import (
 	"compress/gzip"
@@ -16,7 +16,7 @@ func (g gunWriter) Write(p []byte) (int, error) {
 	return g.Writer.Write(p)
 }
 
-func GunZipMiddleware(h http.Handler) http.Handler {
+func GunZipMiddlware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			h.ServeHTTP(w, r)

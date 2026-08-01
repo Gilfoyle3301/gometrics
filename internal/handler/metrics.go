@@ -1,10 +1,8 @@
 package handler
 
 import (
-	"compress/gzip"
 	"encoding/json"
 	"html/template"
-	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -44,7 +42,7 @@ func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
-	// parts := strings.Split(r.URL.Path, "/")
+
 	parts := mux.Vars(r)
 	if len(parts) != expectedParts {
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -180,20 +178,8 @@ func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body io.Reader = r.Body
-
-	if r.Header.Get("Content-Encoding") == "gzip" {
-		gz, err := gzip.NewReader(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to create gzip reader", http.StatusBadRequest)
-			return
-		}
-		defer gz.Close()
-		body = gz
-	}
-
 	mtr := new(models.GetMetrics)
-	if err := json.NewDecoder(body).Decode(mtr); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
 		http.Error(w, "Invalid metric data", http.StatusBadRequest)
 		return
 	}

@@ -13,8 +13,9 @@ import (
 
 	"github.com/Gilfoyle3301/gometrics/internal/config/server"
 	"github.com/Gilfoyle3301/gometrics/internal/handler"
-	"github.com/Gilfoyle3301/gometrics/internal/middleware"
+	"github.com/Gilfoyle3301/gometrics/internal/middlware"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
+	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/caarlos0/env/v11"
 	"github.com/gorilla/mux"
 	"go.uber.org/zap"
@@ -45,10 +46,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr := valueOr(cfg.Address, *address)
-	saveInterval := valueOr(cfg.StoreInterval, *storeInterval)
-	storagePath := valueOr(cfg.FileStoragePath, *fileStoragePath)
-	needRestore := valueOr(cfg.Restore, *restore)
+	addr := shared.ValueOr(cfg.Address, *address)
+	saveInterval := shared.ValueOr(cfg.StoreInterval, *storeInterval)
+	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
+	needRestore := shared.ValueOr(cfg.Restore, *restore)
 
 	if saveInterval < 0 {
 		slog.Error("store interval must not be negative")
@@ -103,12 +104,13 @@ func main() {
 		}()
 	}
 
-	r.Handle("/update/{type}/{name}/{value}", middleware.LoggerMiddlware(http.HandlerFunc(handle.UpdateMetrics), sg)).Methods("POST")
-	r.Handle("/update", middleware.LoggerMiddlware(http.HandlerFunc(handle.UpdateMetric), sg)).Methods("POST")
-	r.Handle("/value/{type}/{name}", middleware.LoggerMiddlware(http.HandlerFunc(handle.GetMetrics), sg)).Methods("GET")
-	r.Handle("/value", middleware.LoggerMiddlware(http.HandlerFunc(handle.GetMetric), sg)).Methods("POST")
-	r.Handle("/", middleware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
-	if err := http.ListenAndServe(addr, middleware.GunZipMiddleware(r)); err != nil {
+	r.Handle("/update/{type}/{name}/{value}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)).Methods("POST")
+	r.Handle("/update", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)).Methods("POST")
+	r.Handle("/value/{type}/{name}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)).Methods("GET")
+	r.Handle("/value", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)).Methods("POST")
+
+	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
+	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
 		panic(err)
 	}
 }
@@ -164,11 +166,4 @@ func toMetrics(rows []models.MetricRow) []models.Metrics {
 	}
 
 	return result
-}
-
-func valueOr[T any](ptr *T, defaultValue T) T {
-	if ptr != nil {
-		return *ptr
-	}
-	return defaultValue
 }

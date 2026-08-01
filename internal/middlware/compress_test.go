@@ -1,4 +1,4 @@
-package middleware
+package middlware
 
 import (
 	"compress/gzip"
@@ -12,8 +12,8 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestGunZipMiddlewareWithoutGzip(t *testing.T) {
-	h := GunZipMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestGunZipMiddlwareWithoutGzip(t *testing.T) {
+	h := GunZipMiddlware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	}))
@@ -27,8 +27,8 @@ func TestGunZipMiddlewareWithoutGzip(t *testing.T) {
 	assert.Equal(t, "OK", w.Body.String())
 }
 
-func TestGunZipMiddlewareWithGzip(t *testing.T) {
-	h := GunZipMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func TestGunZipMiddlwareWithGzip(t *testing.T) {
+	h := GunZipMiddlware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	}))

@@ -36,6 +36,15 @@ func (m *MemStorage) SetGauge(name string, value float64) {
 	m.gauge[name] = value
 }
 
+func (m *MemStorage) SetCounter(name string, value int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.counter == nil {
+		m.counter = make(map[string]int64)
+	}
+	m.counter[name] = value
+}
+
 func (m *MemStorage) AddCounter(name string, value int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
