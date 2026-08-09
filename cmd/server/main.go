@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/caarlos0/env/v11"
 	"github.com/gorilla/mux"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
@@ -26,6 +28,7 @@ var (
 	fileStoragePath *string
 	restore         *bool
 	address         *string
+	dataBaseDSN     *string
 )
 
 func init() {
@@ -33,6 +36,7 @@ func init() {
 	fileStoragePath = flag.String("s", "/tmp/metrics-db.json", "path save metrics")
 	restore = flag.Bool("r", false, "restore metrics from file")
 	address = flag.String("a", "localhost:8080", "server address")
+	dataBaseDSN = flag.String("d", "psql://username:password@localhost:5432/metrics", "database DSN")
 
 }
 
@@ -50,11 +54,21 @@ func main() {
 	saveInterval := shared.ValueOr(cfg.StoreInterval, *storeInterval)
 	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
 	needRestore := shared.ValueOr(cfg.Restore, *restore)
+	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
+
+	globalContext := context.Background()
 
 	if saveInterval < 0 {
 		slog.Error("store interval must not be negative")
 		os.Exit(1)
 	}
+
+	dbpool, err := connectDatabase(globalContext, dataBaseDSN)
+	if err != nil {
+		slog.Error("failed to connect to database", "error", err)
+		os.Exit(1)
+	}
+	defer dbpool.Close()
 
 	if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
 		slog.Error("failed to create storage directory", "error", err)
@@ -104,10 +118,13 @@ func main() {
 		}()
 	}
 
+	dbh := handler.NewDBHandler(dbpool)
+
 	r.Handle("/update/{type}/{name}/{value}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)).Methods("POST")
 	r.Handle("/update", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)).Methods("POST")
 	r.Handle("/value/{type}/{name}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)).Methods("GET")
 	r.Handle("/value", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)).Methods("POST")
+	r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(http.HandlerFunc(dbh.Ping)), sg)).Methods("GET")
 
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
@@ -166,4 +183,12 @@ func toMetrics(rows []models.MetricRow) []models.Metrics {
 	}
 
 	return result
+}
+
+func connectDatabase(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
+	conn, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("connect to database: %w", err)
+	}
+	return conn, nil
 }
