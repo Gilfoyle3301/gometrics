@@ -1,124 +1,111 @@
 package models
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
+	"fmt"
 	"sync"
 )
 
 type MemStorage struct {
-	mu      sync.RWMutex
-	gauge   map[string]float64
-	counter map[string]int64
-}
-
-type Storage interface {
-	SetGauge(name string, value float64)
-	AddCounter(name string, value int64)
-	GetAllMetrics() []MetricRow
-	GetGauge(name string) (float64, bool)
-	GetCounter(name string) (int64, bool)
+	mu       sync.RWMutex
+	gauges   map[string]float64
+	counters map[string]int64
 }
 
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
-		mu:      sync.RWMutex{},
-		gauge:   make(map[string]float64),
-		counter: make(map[string]int64),
+		gauges:   make(map[string]float64),
+		counters: make(map[string]int64),
 	}
 }
-func (m *MemStorage) SetGauge(name string, value float64) {
+
+func (m *MemStorage) Update(ctx context.Context, metric *Metrics) error {
+	if metric == nil {
+		return fmt.Errorf("metric is nil")
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.gauge == nil {
-		m.gauge = make(map[string]float64)
-	}
-	m.gauge[name] = value
-}
 
-func (m *MemStorage) SetCounter(name string, value int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.counter == nil {
-		m.counter = make(map[string]int64)
-	}
-	m.counter[name] = value
-}
-
-func (m *MemStorage) AddCounter(name string, value int64) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.counter == nil {
-		m.counter = make(map[string]int64)
-	}
-	m.counter[name] += value
-}
-
-type MetricRow struct {
-	Name  string
-	Type  string
-	Value any
-}
-
-func (m *MemStorage) GetAllMetrics() []MetricRow {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	var result []MetricRow
-
-	for name, value := range m.gauge {
-		result = append(result, MetricRow{Name: name, Type: Gauge, Value: value})
-	}
-
-	for name, value := range m.counter {
-		result = append(result, MetricRow{Name: name, Type: Counter, Value: value})
-	}
-
-	return result
-}
-
-func (m *MemStorage) GetCounter(name string) (int64, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	v, ok := m.counter[name]
-
-	return v, ok
-}
-
-func (m *MemStorage) GetGauge(name string) (float64, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	v, ok := m.gauge[name]
-
-	return v, ok
-}
-
-func (m *MemStorage) Restore(data []byte) error {
-	mtr := new([]Metrics)
-
-	if err := json.NewDecoder(bytes.NewBuffer(data)).Decode(mtr); err != nil {
-		return err
-	}
-
-	for _, mt := range *mtr {
-		switch mt.MType {
-		case Gauge:
-			if mt.Value == nil {
-				continue
-			}
-			m.SetGauge(mt.ID, *mt.Value)
-
-		case Counter:
-			if mt.Delta == nil {
-				continue
-			}
-			m.AddCounter(mt.ID, *mt.Delta)
+	switch metric.MType {
+	case Gauge:
+		if metric.Value == nil {
+			return fmt.Errorf("gauge value cannot be nil")
 		}
+		m.gauges[metric.ID] = *metric.Value
+
+	case Counter:
+		if metric.Delta == nil {
+			return fmt.Errorf("counter delta cannot be nil")
+		}
+		m.counters[metric.ID] += *metric.Delta
+
+	default:
+		return fmt.Errorf("unsupported metric type: %s", metric.MType)
 	}
+
 	return nil
 }
 
-func MergeWithStrategy[K comparable, V any](dst, src map[K]V) map[K]V {
-	// result := make(map[K]V, len(dst)+len(src))
+func (m *MemStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	return dst
+	switch mType {
+	case Gauge:
+		if val, ok := m.gauges[name]; ok {
+			return &Metrics{
+				ID:    name,
+				MType: Gauge,
+				Value: &val,
+			}, nil
+		}
+		return nil, fmt.Errorf("gauge metric %s not found", name)
+
+	case Counter:
+		if val, ok := m.counters[name]; ok {
+			return &Metrics{
+				ID:    name,
+				MType: Counter,
+				Delta: &val,
+			}, nil
+		}
+		return nil, fmt.Errorf("counter metric %s not found", name)
+
+	default:
+		return nil, fmt.Errorf("unsupported metric type: %s", mType)
+	}
+}
+
+func (m *MemStorage) GetAll(ctx context.Context) ([]Metrics, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []Metrics
+
+	for name, value := range m.gauges {
+		result = append(result, Metrics{
+			ID:    name,
+			MType: Gauge,
+			Value: &value,
+		})
+	}
+
+	for name, delta := range m.counters {
+		result = append(result, Metrics{
+			ID:    name,
+			MType: Counter,
+			Delta: &delta,
+		})
+	}
+
+	return result, nil
+}
+
+func (m *MemStorage) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (m *MemStorage) Close() error {
+	return nil
 }

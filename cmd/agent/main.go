@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"io"
@@ -50,42 +51,46 @@ func (a *Agent) collectMetrics() {
 	m := new(runtime.MemStats)
 	runtime.ReadMemStats(m)
 
-	a.storage.SetGauge("Alloc", float64(m.Alloc))
-	a.storage.SetGauge("BuckHashSys", float64(m.BuckHashSys))
-	a.storage.SetGauge("Frees", float64(m.Frees))
-	a.storage.SetGauge("GCCPUFraction", float64(m.GCCPUFraction))
-	a.storage.SetGauge("GCSys", float64(m.GCSys))
-	a.storage.SetGauge("HeapAlloc", float64(m.HeapAlloc))
-	a.storage.SetGauge("HeapIdle", float64(m.HeapIdle))
-	a.storage.SetGauge("HeapInuse", float64(m.HeapInuse))
-	a.storage.SetGauge("HeapObjects", float64(m.HeapObjects))
-	a.storage.SetGauge("HeapReleased", float64(m.HeapReleased))
-	a.storage.SetGauge("HeapSys", float64(m.HeapSys))
-	a.storage.SetGauge("LastGC", float64(m.LastGC))
-	a.storage.SetGauge("Lookups", float64(m.Lookups))
-	a.storage.SetGauge("MCacheInuse", float64(m.MCacheInuse))
-	a.storage.SetGauge("MCacheSys", float64(m.MCacheSys))
-	a.storage.SetGauge("MSpanInuse", float64(m.MSpanInuse))
-	a.storage.SetGauge("MSpanSys", float64(m.MSpanSys))
-	a.storage.SetGauge("Mallocs", float64(m.Mallocs))
-	a.storage.SetGauge("NextGC", float64(m.NextGC))
-	a.storage.SetGauge("NumForcedGC", float64(m.NumForcedGC))
-	a.storage.SetGauge("OtherSys", float64(m.OtherSys))
-	a.storage.SetGauge("PauseTotalNs", float64(m.PauseTotalNs))
-	a.storage.SetGauge("StackInuse", float64(m.StackInuse))
-	a.storage.SetGauge("StackSys", float64(m.StackSys))
-	a.storage.SetGauge("Sys", float64(m.Sys))
-	a.storage.SetGauge("TotalAlloc", float64(m.TotalAlloc))
-	a.storage.SetGauge("NumGC", float64(m.NumGC))
-	a.storage.SetGauge("RandomValue", rand.Float64())
-	a.storage.AddCounter("PollCount", 1)
+	a.storage.Update("Alloc", float64(m.Alloc))
+	a.storage.Update("BuckHashSys", float64(m.BuckHashSys))
+	a.storage.Update("Frees", float64(m.Frees))
+	a.storage.Update("GCCPUFraction", float64(m.GCCPUFraction))
+	a.storage.Update("GCSys", float64(m.GCSys))
+	a.storage.Update("HeapAlloc", float64(m.HeapAlloc))
+	a.storage.Update("HeapIdle", float64(m.HeapIdle))
+	a.storage.Update("HeapInuse", float64(m.HeapInuse))
+	a.storage.Update("HeapObjects", float64(m.HeapObjects))
+	a.storage.Update("HeapReleased", float64(m.HeapReleased))
+	a.storage.Update("HeapSys", float64(m.HeapSys))
+	a.storage.Update("LastGC", float64(m.LastGC))
+	a.storage.Update("Lookups", float64(m.Lookups))
+	a.storage.Update("MCacheInuse", float64(m.MCacheInuse))
+	a.storage.Update("MCacheSys", float64(m.MCacheSys))
+	a.storage.Update("MSpanInuse", float64(m.MSpanInuse))
+	a.storage.Update("MSpanSys", float64(m.MSpanSys))
+	a.storage.Update("Mallocs", float64(m.Mallocs))
+	a.storage.Update("NextGC", float64(m.NextGC))
+	a.storage.Update("NumForcedGC", float64(m.NumForcedGC))
+	a.storage.Update("OtherSys", float64(m.OtherSys))
+	a.storage.Update("PauseTotalNs", float64(m.PauseTotalNs))
+	a.storage.Update("StackInuse", float64(m.StackInuse))
+	a.storage.Update("StackSys", float64(m.StackSys))
+	a.storage.Update("Sys", float64(m.Sys))
+	a.storage.Update("TotalAlloc", float64(m.TotalAlloc))
+	a.storage.Update("NumGC", float64(m.NumGC))
+	a.storage.Update("RandomValue", rand.Float64())
+	a.storage.Update("PollCount", 1)
 
 	slog.Info("Collect metrics done")
 
 }
 
 func (a *Agent) reportMetrics(client *http.Client) {
-	metrics := a.storage.GetAllMetrics()
+	metrics, err := a.storage.GetAll(context.Background())
+	if err != nil {
+		slog.Error("failed to get all metrics", "error", err)
+		return
+	}
 
 	for _, m := range metrics {
 		updateURL, err := url.JoinPath(

@@ -27,17 +27,19 @@ type PageData struct {
 	CounterCount int
 }
 
-type metrics struct {
+type Handler struct {
 	storage models.Storage
 	logger  *zap.SugaredLogger
 }
 
-func New(s models.Storage) metrics {
-	return metrics{storage: s}
+func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
+	return &Handler{
+		storage: s,
+		logger:  logger,
+	}
 }
 
-func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
-
+func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "text/plain" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
@@ -48,195 +50,176 @@ func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Not found", http.StatusNotFound)
 		return
 	}
+
 	metricType := parts["type"]
+	metricName := parts["name"]
 	metricValueStr := parts["value"]
 
-	metricName, ok := parts["name"]
-
-	if !ok {
-		http.Error(w, "Metric name is empty", http.StatusNotFound)
-		return
+	metric := &models.Metrics{
+		ID:    metricName,
+		MType: metricType,
 	}
 
-	if metricType != models.Counter && metricType != models.Gauge {
-		http.Error(w, "Unknow metrics name", http.StatusBadRequest)
-		return
-	}
-
-	var err error
 	switch metricType {
 	case models.Gauge:
-		var value float64
-		value, err = strconv.ParseFloat(metricValueStr, 64)
+		value, err := strconv.ParseFloat(metricValueStr, 64)
 		if err != nil {
 			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
 			return
 		}
-		m.storage.SetGauge(metricName, value)
+		metric.Value = &value
 
 	case models.Counter:
-		var value int64
-
-		value, err = strconv.ParseInt(metricValueStr, 10, 64)
+		delta, err := strconv.ParseInt(metricValueStr, 10, 64)
 		if err != nil {
 			http.Error(w, "Invalid counter value", http.StatusBadRequest)
 			return
 		}
-		m.storage.AddCounter(metricName, value)
+		metric.Delta = &delta
 
 	default:
-		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		http.Error(w, "Unknown metric type", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.storage.Update(r.Context(), metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
-
 }
 
-func (m *metrics) UpdateMetric(w http.ResponseWriter, r *http.Request) {
-
-	mtr := new(models.Metrics)
+func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
-	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
+
+	var metric models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
 		http.Error(w, "Invalid metric data", http.StatusBadRequest)
 		return
 	}
 
-	if mtr.MType != models.Counter && mtr.MType != models.Gauge {
-		http.Error(w, "Unknow metrics name", http.StatusBadRequest)
+	if metric.MType != models.Gauge && metric.MType != models.Counter {
+		http.Error(w, "Unknown metric type", http.StatusBadRequest)
 		return
 	}
 
-	switch mtr.MType {
-	case models.Gauge:
-		if mtr.Value == nil {
-			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
-			return
-		}
-		m.storage.SetGauge(mtr.ID, *mtr.Value)
+	if metric.MType == models.Gauge && metric.Value == nil {
+		http.Error(w, "Invalid gauge value", http.StatusBadRequest)
+		return
+	}
+	if metric.MType == models.Counter && metric.Delta == nil {
+		http.Error(w, "Invalid counter delta", http.StatusBadRequest)
+		return
+	}
 
-	case models.Counter:
-		if mtr.Delta == nil {
-			http.Error(w, "Invalid counter delta", http.StatusBadRequest)
-			return
-		}
-		m.storage.AddCounter(mtr.ID, *mtr.Delta)
-
-	default:
-		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+	if err := h.storage.Update(r.Context(), &metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
-
 }
 
-func (m *metrics) GetMetrics(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	metricType := vars["type"]
 	metricName := vars["name"]
 
-	var valueStr string
-	// found := false
+	metric, err := h.storage.Get(r.Context(), metricName, metricType)
+	if err != nil {
+		http.Error(w, "Metric not found", http.StatusNotFound)
+		return
+	}
 
-	switch metricType {
+	var valueStr string
+	switch metric.MType {
 	case models.Gauge:
-		val, ok := m.storage.GetGauge(metricName)
-		if !ok {
-			http.Error(w, "Gauge not found", http.StatusNotFound)
-			return
+		if metric.Value != nil {
+			valueStr = strconv.FormatFloat(*metric.Value, 'f', -1, 64)
 		}
-		valueStr = strconv.FormatFloat(val, 'f', -1, 64)
 	case models.Counter:
-		val, ok := m.storage.GetCounter(metricName)
-		if !ok {
-			http.Error(w, "Counter not found", http.StatusNotFound)
-			return
+		if metric.Delta != nil {
+			valueStr = strconv.FormatInt(*metric.Delta, 10)
 		}
-		valueStr = strconv.FormatInt(val, 10)
 	default:
 		http.Error(w, "Invalid metric type", http.StatusBadRequest)
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(valueStr))
-
 }
 
-func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
-
+func (h *Handler) GetMetric(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
-		http.Error(w, "Content-Type header not set to application/json", http.StatusBadRequest)
+		http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
 		return
 	}
 
-	mtr := new(models.GetMetrics)
-	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
+	var req models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid metric data", http.StatusBadRequest)
 		return
 	}
-	out := new(models.Metrics)
-	switch mtr.MType {
-	case models.Gauge:
-		val, ok := m.storage.GetGauge(mtr.ID)
-		if !ok {
-			http.Error(w, "Gauge not found", http.StatusNotFound)
-			return
-		}
-		out.ID = mtr.ID
-		out.MType = mtr.MType
-		out.Value = &val
 
-	case models.Counter:
-		val, ok := m.storage.GetCounter(mtr.ID)
-		if !ok {
-			http.Error(w, "Counter not found", http.StatusNotFound)
-			return
-		}
-		out.ID = mtr.ID
-		out.MType = mtr.MType
-		out.Delta = &val
-	default:
-		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+	metric, err := h.storage.Get(r.Context(), req.ID, req.MType)
+	if err != nil {
+		http.Error(w, "Metric not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(out); err != nil {
-		if m.logger != nil {
-			m.logger.Error("failed to encode response: %v", err)
+	if err := json.NewEncoder(w).Encode(metric); err != nil {
+		if h.logger != nil {
+			h.logger.Error("failed to encode response: %v", zap.Error(err))
 		}
 	}
-
 }
 
-func (m *metrics) MainPage(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) MainPage(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Get main page")
-	allMetrics := m.storage.GetAllMetrics()
+
+	allMetrics, err := h.storage.GetAll(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to load metrics", http.StatusInternalServerError)
+		return
+	}
+
 	data := PageData{
 		Metrics: make([]models.MetricRow, 0, len(allMetrics)),
 	}
+
 	for _, mt := range allMetrics {
-		data.Metrics = append(data.Metrics, models.MetricRow{
-			Name:  mt.Name,
-			Type:  mt.Type,
-			Value: mt.Value,
-		})
-		switch mt.Type {
+
+		row := models.MetricRow{
+			Name: mt.ID,
+			Type: mt.MType,
+		}
+
+		switch mt.MType {
 		case models.Gauge:
+			if mt.Value != nil {
+				row.Value = *mt.Value
+			}
 			data.GaugeCount++
 		case models.Counter:
+			if mt.Delta != nil {
+				row.Value = *mt.Delta
+			}
 			data.CounterCount++
 		}
+
+		data.Metrics = append(data.Metrics, row)
 	}
 
 	sort.Slice(data.Metrics, func(i, j int) bool {
@@ -244,10 +227,9 @@ func (m *metrics) MainPage(w http.ResponseWriter, r *http.Request) {
 	})
 
 	data.Total = len(data.Metrics)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pageTemplate.Execute(w, data); err != nil {
 		http.Error(w, "Failed to render page", http.StatusInternalServerError)
-		return
 	}
-
 }

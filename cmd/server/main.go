@@ -33,10 +33,10 @@ var (
 
 func init() {
 	storeInterval = flag.Duration("i", time.Second*300, "time interval save to file")
-	fileStoragePath = flag.String("s", "/tmp/metrics-db.json", "path save metrics")
+	fileStoragePath = flag.String("s", "", "path save metrics")
 	restore = flag.Bool("r", false, "restore metrics from file")
 	address = flag.String("a", "localhost:8080", "server address")
-	dataBaseDSN = flag.String("d", "psql://username:password@localhost:5432/metrics", "database DSN")
+	dataBaseDSN = flag.String("d", "", "database DSN")
 
 }
 
@@ -56,31 +56,7 @@ func main() {
 	needRestore := shared.ValueOr(cfg.Restore, *restore)
 	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
 
-	globalContext := context.Background()
-
-	if saveInterval < 0 {
-		slog.Error("store interval must not be negative")
-		os.Exit(1)
-	}
-
-	dbpool, err := connectDatabase(globalContext, dataBaseDSN)
-	if err != nil {
-		slog.Error("failed to connect to database", "error", err)
-		os.Exit(1)
-	}
-	defer dbpool.Close()
-
-	if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
-		slog.Error("failed to create storage directory", "error", err)
-		os.Exit(1)
-	}
-
-	storageFile, err := os.OpenFile(storagePath, os.O_RDWR|os.O_CREATE, 0644)
-	if err != nil {
-		slog.Error("failed to open file", "error", err)
-		os.Exit(1)
-	}
-	defer storageFile.Close()
+	ctx := context.Background()
 
 	logger, err := zap.NewDevelopment()
 	if err != nil {
@@ -88,43 +64,77 @@ func main() {
 	}
 	defer logger.Sync()
 	sg := logger.Sugar()
-	r := mux.NewRouter()
-	store := models.NewMemStorage()
 
-	handle := handler.New(store)
-
-	if needRestore {
-		data, err := io.ReadAll(storageFile)
-		if err != nil {
-			slog.Error("failed to read file", "error", err)
-		}
-		if len(data) > 0 {
-			if err := store.Restore(data); err != nil {
-				slog.Error("failed to restore metrics", "error", err)
-			}
-		}
+	if saveInterval < 0 {
+		slog.Error("store interval must not be negative")
+		os.Exit(1)
 	}
 
-	if saveInterval > 0 {
-		saveTicker := time.NewTicker(saveInterval)
-		defer saveTicker.Stop()
+	r := mux.NewRouter()
 
-		go func() {
-			for range saveTicker.C {
-				if err := saveMetrics(storageFile, store); err != nil {
-					sg.Error("failed to save metrics", "error", err)
+	var storage models.Storage // any storage implementation (temporary)
+	switch {
+	case dataBaseDSN != "":
+		dbpool, err := pgxpool.New(ctx, dataBaseDSN)
+		if err != nil {
+			sg.Error("failed to connect to database", zap.Error(err))
+			return
+		}
+		defer dbpool.Close()
+		dbh := handler.NewDBHandler(dbpool)
+		r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(http.HandlerFunc(dbh.Ping)), sg)).Methods("GET")
+
+	case storagePath != "":
+
+		if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
+			slog.Error("failed to create storage directory", "error", err)
+			os.Exit(1)
+		}
+
+		storageFile, err := os.OpenFile(storagePath, os.O_RDWR|os.O_CREATE, 0644)
+		if err != nil {
+			slog.Error("failed to open file", "error", err)
+			os.Exit(1)
+		}
+		storage = storageFile
+		memStore := models.NewMemStorage()
+
+		defer storageFile.Close()
+
+		if saveInterval > 0 {
+			saveTicker := time.NewTicker(saveInterval)
+			defer saveTicker.Stop()
+
+			go func() {
+				for range saveTicker.C {
+					if err := saveMetrics(storageFile, memStore); err != nil {
+						sg.Error("failed to save metrics", "error", err)
+					}
+				}
+			}()
+		}
+
+	default:
+		store := models.NewMemStorage()
+
+		if needRestore {
+			data, err := io.ReadAll(storage.(io.Reader))
+			if err != nil {
+				slog.Error("failed to read file", "error", err)
+			}
+			if len(data) > 0 {
+				if err := store.Restore(data); err != nil {
+					slog.Error("failed to restore metrics", "error", err)
 				}
 			}
-		}()
+		}
 	}
 
-	dbh := handler.NewDBHandler(dbpool)
-
+	handle := handler.New(storage)
 	r.Handle("/update/{type}/{name}/{value}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)).Methods("POST")
 	r.Handle("/update", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)).Methods("POST")
 	r.Handle("/value/{type}/{name}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)).Methods("GET")
 	r.Handle("/value", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)).Methods("POST")
-	r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(http.HandlerFunc(dbh.Ping)), sg)).Methods("GET")
 
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
@@ -183,12 +193,4 @@ func toMetrics(rows []models.MetricRow) []models.Metrics {
 	}
 
 	return result
-}
-
-func connectDatabase(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
-	conn, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("connect to database: %w", err)
-	}
-	return conn, nil
 }
