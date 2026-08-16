@@ -21,68 +21,82 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
-// const pollInterval = 2
-// const reportInterval = 10
-
 type Agent struct {
 	mu        sync.RWMutex
-	storage   *models.MemStorage
+	storage   models.Storage
 	pollCount int64
 	server    string
 }
 
-func NewAgent(url string) *Agent {
+func NewAgent(serverURL string) *Agent {
 	return &Agent{
-		server:  url,
+		server:  serverURL,
 		storage: models.NewMemStorage(),
 	}
 }
 
-type metric struct {
-	Name  string
-	Type  string
-	Value any
+func (a *Agent) updateGauge(name string, value float64) {
+	_ = a.storage.Update(context.Background(), &models.Metrics{
+		ID:    name,
+		MType: models.Gauge,
+		Value: &value,
+	})
+}
+
+func (a *Agent) updateCounter(name string, delta int64) {
+	_ = a.storage.Update(context.Background(), &models.Metrics{
+		ID:    name,
+		MType: models.Counter,
+		Delta: &delta,
+	})
 }
 
 func (a *Agent) collectMetrics() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+
 	a.pollCount++
 	m := new(runtime.MemStats)
 	runtime.ReadMemStats(m)
 
-	a.storage.Update("Alloc", float64(m.Alloc))
-	a.storage.Update("BuckHashSys", float64(m.BuckHashSys))
-	a.storage.Update("Frees", float64(m.Frees))
-	a.storage.Update("GCCPUFraction", float64(m.GCCPUFraction))
-	a.storage.Update("GCSys", float64(m.GCSys))
-	a.storage.Update("HeapAlloc", float64(m.HeapAlloc))
-	a.storage.Update("HeapIdle", float64(m.HeapIdle))
-	a.storage.Update("HeapInuse", float64(m.HeapInuse))
-	a.storage.Update("HeapObjects", float64(m.HeapObjects))
-	a.storage.Update("HeapReleased", float64(m.HeapReleased))
-	a.storage.Update("HeapSys", float64(m.HeapSys))
-	a.storage.Update("LastGC", float64(m.LastGC))
-	a.storage.Update("Lookups", float64(m.Lookups))
-	a.storage.Update("MCacheInuse", float64(m.MCacheInuse))
-	a.storage.Update("MCacheSys", float64(m.MCacheSys))
-	a.storage.Update("MSpanInuse", float64(m.MSpanInuse))
-	a.storage.Update("MSpanSys", float64(m.MSpanSys))
-	a.storage.Update("Mallocs", float64(m.Mallocs))
-	a.storage.Update("NextGC", float64(m.NextGC))
-	a.storage.Update("NumForcedGC", float64(m.NumForcedGC))
-	a.storage.Update("OtherSys", float64(m.OtherSys))
-	a.storage.Update("PauseTotalNs", float64(m.PauseTotalNs))
-	a.storage.Update("StackInuse", float64(m.StackInuse))
-	a.storage.Update("StackSys", float64(m.StackSys))
-	a.storage.Update("Sys", float64(m.Sys))
-	a.storage.Update("TotalAlloc", float64(m.TotalAlloc))
-	a.storage.Update("NumGC", float64(m.NumGC))
-	a.storage.Update("RandomValue", rand.Float64())
-	a.storage.Update("PollCount", 1)
+	gauges := map[string]float64{
+		"Alloc":         float64(m.Alloc),
+		"BuckHashSys":   float64(m.BuckHashSys),
+		"Frees":         float64(m.Frees),
+		"GCCPUFraction": m.GCCPUFraction,
+		"GCSys":         float64(m.GCSys),
+		"HeapAlloc":     float64(m.HeapAlloc),
+		"HeapIdle":      float64(m.HeapIdle),
+		"HeapInuse":     float64(m.HeapInuse),
+		"HeapObjects":   float64(m.HeapObjects),
+		"HeapReleased":  float64(m.HeapReleased),
+		"HeapSys":       float64(m.HeapSys),
+		"LastGC":        float64(m.LastGC),
+		"Lookups":       float64(m.Lookups),
+		"MCacheInuse":   float64(m.MCacheInuse),
+		"MCacheSys":     float64(m.MCacheSys),
+		"MSpanInuse":    float64(m.MSpanInuse),
+		"MSpanSys":      float64(m.MSpanSys),
+		"Mallocs":       float64(m.Mallocs),
+		"NextGC":        float64(m.NextGC),
+		"NumForcedGC":   float64(m.NumForcedGC),
+		"OtherSys":      float64(m.OtherSys),
+		"PauseTotalNs":  float64(m.PauseTotalNs),
+		"StackInuse":    float64(m.StackInuse),
+		"StackSys":      float64(m.StackSys),
+		"Sys":           float64(m.Sys),
+		"TotalAlloc":    float64(m.TotalAlloc),
+		"NumGC":         float64(m.NumGC),
+		"RandomValue":   rand.Float64(),
+	}
+
+	for name, value := range gauges {
+		a.updateGauge(name, value)
+	}
+
+	a.updateCounter("PollCount", 1)
 
 	slog.Info("Collect metrics done")
-
 }
 
 func (a *Agent) reportMetrics(client *http.Client) {
@@ -93,43 +107,20 @@ func (a *Agent) reportMetrics(client *http.Client) {
 	}
 
 	for _, m := range metrics {
-		updateURL, err := url.JoinPath(
-			a.server,
-			"update",
-		)
+		updateURL, err := url.JoinPath(a.server, "update")
 		if err != nil {
-			slog.Error("failed to build url", "metric", m.Name, "error", err)
+			slog.Error("failed to build url", "metric", m.ID, "error", err)
 			continue
 		}
-		metric := models.Metrics{ID: m.Name, MType: m.Type}
-		switch m.Type {
-		case models.Gauge:
-			value, ok := m.Value.(float64)
-			if !ok {
-				slog.Error("invalid gauge value", "metric", m.Name)
-				continue
-			}
-			metric.Value = &value
-		case models.Counter:
-			delta, ok := m.Value.(int64)
-			if !ok {
-				slog.Error("invalid counter value", "metric", m.Name)
-				continue
-			}
-			metric.Delta = &delta
-		default:
-			slog.Error("invalid metric type", "metric", m.Name, "type", m.Type)
+		v, e := json.Marshal(m)
+		if e != nil {
+			slog.Error("failed to marshal metric", "metric", m.ID, "error", e)
 			continue
 		}
 
-		v, e := json.Marshal(metric)
-		if e != nil {
-			slog.Error("failed to marshal metric", "metric", m.Name, "error", e)
-			continue
-		}
 		resp, err := client.Post(updateURL, "application/json", bytes.NewBuffer(v))
 		if err != nil {
-			slog.Error("failed to send metric", "metric", m.Name, "error", err)
+			slog.Error("failed to send metric", "metric", m.ID, "error", err)
 			continue
 		}
 
@@ -139,14 +130,15 @@ func (a *Agent) reportMetrics(client *http.Client) {
 		if resp.StatusCode >= http.StatusBadRequest {
 			slog.Error(
 				"server returned bad status",
-				"metric", m.Name,
+				"metric", m.ID,
 				"status", resp.Status,
 			)
 			continue
 		}
 
-		if m.Type == models.Counter {
-			a.storage.SetCounter(m.Name, 0)
+		if m.MType == models.Counter && m.Delta != nil {
+			negDelta := -*m.Delta
+			a.updateCounter(m.ID, negDelta)
 		}
 	}
 }
@@ -161,7 +153,6 @@ func init() {
 	address = flag.String("a", "http://localhost:8080", "server address")
 	reportInterval = flag.Duration("r", 10*time.Second, "report interval")
 	pollInterval = flag.Duration("p", 2*time.Second, "poll interval")
-
 }
 
 func main() {
@@ -173,21 +164,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	address := shared.ValueOr(cfg.Address, *address)
-	pollInterval := shared.ValueOr(cfg.PollInterval, *pollInterval)
-	reportInterval := shared.ValueOr(cfg.ReportInterval, *reportInterval)
+	addr := shared.ValueOr(cfg.Address, *address)
+	pInterval := shared.ValueOr(cfg.PollInterval, *pollInterval)
+	rInterval := shared.ValueOr(cfg.ReportInterval, *reportInterval)
 
-	if pollInterval <= 0 || reportInterval <= 0 {
+	if pInterval <= 0 || rInterval <= 0 {
 		slog.Error("intervals must be positive")
 		os.Exit(1)
 	}
 
-	a := NewAgent(address)
+	a := NewAgent(addr)
 
-	collectTicker := time.NewTicker(pollInterval)
+	collectTicker := time.NewTicker(pInterval)
 	defer collectTicker.Stop()
 
-	sendTicker := time.NewTicker(reportInterval)
+	sendTicker := time.NewTicker(rInterval)
 	defer sendTicker.Stop()
 
 	client := &http.Client{

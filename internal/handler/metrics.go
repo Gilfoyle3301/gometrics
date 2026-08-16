@@ -209,12 +209,12 @@ func (h *Handler) MainPage(w http.ResponseWriter, r *http.Request) {
 		switch mt.MType {
 		case models.Gauge:
 			if mt.Value != nil {
-				row.Value = *mt.Value
+				row.Value = mt.Value
 			}
 			data.GaugeCount++
 		case models.Counter:
 			if mt.Delta != nil {
-				row.Value = *mt.Delta
+				row.Delta = mt.Delta
 			}
 			data.CounterCount++
 		}

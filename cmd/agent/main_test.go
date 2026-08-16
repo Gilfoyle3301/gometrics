@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -25,26 +26,36 @@ func TestCollectMetrics(t *testing.T) {
 
 	a.collectMetrics()
 
-	metrics := a.storage.GetAllMetrics()
+	metrics, err := a.storage.GetAll(context.Background())
+	require.NoError(t, err)
 	require.NotEmpty(t, metrics)
 
-	byName := make(map[string]any, len(metrics))
+	byName := make(map[string]models.Metrics, len(metrics))
 	for _, m := range metrics {
-		byName[m.Name] = m.Value
+		byName[m.ID] = m
 	}
 
 	for _, name := range []string{
 		"Alloc", "HeapAlloc", "HeapSys", "NumGC", "RandomValue", "TotalAlloc",
 	} {
-		_, ok := byName[name]
+		m, ok := byName[name]
 		assert.Truef(t, ok, "expected gauge %q to be present", name)
+		if ok {
+			assert.Equal(t, models.Gauge, m.MType)
+			require.NotNil(t, m.Value)
+		}
 	}
-	pollCount, ok := byName["PollCount"]
-	require.True(t, ok, "PollCount must be present")
-	assert.EqualValues(t, 1, pollCount)
 
-	rv, ok := byName["RandomValue"].(float64)
-	require.True(t, ok, "RandomValue must be float64")
+	pollCountMetric, ok := byName["PollCount"]
+	require.True(t, ok, "PollCount must be present")
+	assert.Equal(t, models.Counter, pollCountMetric.MType)
+	require.NotNil(t, pollCountMetric.Delta)
+	assert.EqualValues(t, 1, *pollCountMetric.Delta)
+
+	rvMetric, ok := byName["RandomValue"]
+	require.True(t, ok, "RandomValue must be present")
+	require.NotNil(t, rvMetric.Value)
+	rv := *rvMetric.Value
 	assert.GreaterOrEqual(t, rv, 0.0)
 	assert.Less(t, rv, 1.0)
 }
@@ -56,9 +67,11 @@ func TestCollectMetricsPollCountAccumulates(t *testing.T) {
 	for range iterations {
 		a.collectMetrics()
 	}
-	pollCount, ok := a.storage.GetCounter("PollCount")
-	require.True(t, ok, "PollCount must be present")
-	assert.EqualValues(t, iterations, pollCount)
+
+	m, err := a.storage.Get(context.Background(), "PollCount", models.Counter)
+	require.NoError(t, err, "PollCount must be present")
+	require.NotNil(t, m.Delta)
+	assert.EqualValues(t, iterations, *m.Delta)
 }
 
 func TestDefaultAddressHasScheme(t *testing.T) {
@@ -104,7 +117,9 @@ func TestSendMetricsSuccess(t *testing.T) {
 	a := NewAgent(server.URL)
 	a.collectMetrics()
 
-	expectedCount := len(a.storage.GetAllMetrics())
+	metrics, err := a.storage.GetAll(context.Background())
+	require.NoError(t, err)
+	expectedCount := len(metrics)
 	require.Greater(t, expectedCount, 0)
 
 	client := &http.Client{Timeout: time.Second}
@@ -128,7 +143,10 @@ func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
 
 	a := NewAgent(server.URL)
 	a.collectMetrics()
-	expectedCount := len(a.storage.GetAllMetrics())
+
+	metrics, err := a.storage.GetAll(context.Background())
+	require.NoError(t, err)
+	expectedCount := len(metrics)
 
 	client := &http.Client{Timeout: time.Second}
 
@@ -197,5 +215,4 @@ func TestAgentConcurrentCollectAndSend(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
-
 }
