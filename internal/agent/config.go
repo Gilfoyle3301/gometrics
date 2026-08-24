@@ -1,5 +1,7 @@
 package agent
 
+import "strings"
+
 type Config struct {
 	Address        *string `env:"ADDRESS"`
 	ReportInterval *int    `env:"REPORT_INTERVAL"`
@@ -8,4 +10,11 @@ type Config struct {
 
 func NewConfig() *Config {
 	return &Config{}
+}
+
+func NormalizeAddress(addr string) string {
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "http://" + addr
 }

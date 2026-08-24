@@ -164,7 +164,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr := shared.ValueOr(cfg.Address, *address)
+	addr := agent.NormalizeAddress(shared.ValueOr(cfg.Address, *address))
 	pIntervalSec := shared.ValueOr(cfg.PollInterval, *pollInterval)
 	rIntervalSec := shared.ValueOr(cfg.ReportInterval, *reportInterval)
 

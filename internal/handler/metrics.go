@@ -40,11 +40,6 @@ func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
 }
 
 func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Content-Type") != "text/plain" {
-		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
-		return
-	}
-
 	parts := mux.Vars(r)
 	if len(parts) != expectedParts {
 		http.Error(w, "Not found", http.StatusNotFound)

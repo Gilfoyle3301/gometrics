@@ -91,10 +91,10 @@ func TestUpdateMetrics(t *testing.T) {
 			wantStatus:  http.StatusOK,
 		},
 		{
-			name:        "invalid content type",
+			name:        "any content type accepted for param update",
 			vars:        map[string]string{"type": models.Gauge, "name": "Alloc", "value": "1"},
 			contentType: "application/json",
-			wantStatus:  http.StatusBadRequest,
+			wantStatus:  http.StatusOK,
 		},
 		{
 			name:        "unknown metric type",
