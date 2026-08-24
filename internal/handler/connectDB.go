@@ -1,31 +1,35 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 )
 
+type DBPinger interface {
+	Ping(ctx context.Context) error
+}
+
 type DBHandler struct {
-	dbpool *pgxpool.Pool
+	db     DBPinger
 	logger *zap.SugaredLogger
 }
 
-func NewDBHandler(dbpool *pgxpool.Pool) *DBHandler {
-	return &DBHandler{dbpool: dbpool}
+func NewDBHandler(db DBPinger, logger *zap.SugaredLogger) *DBHandler {
+	return &DBHandler{db: db, logger: logger}
 }
 
 func (h *DBHandler) Ping(w http.ResponseWriter, r *http.Request) {
-	// Может стоит перейти на timeout, но пока оставим так
-	if err := h.dbpool.Ping(r.Context()); err != nil {
-		h.logger.Error("database is unavailable", zap.Error(err))
-		w.Header().Set("Content-Type", "application/json")
+	if err := h.db.Ping(r.Context()); err != nil {
+		if h.logger != nil {
+			h.logger.Error("database is unavailable", zap.Error(err))
+		}
 		http.Error(w, "database is unavailable", http.StatusInternalServerError)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
-
 }

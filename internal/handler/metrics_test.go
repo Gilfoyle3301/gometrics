@@ -293,10 +293,10 @@ func TestGetMetrics(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "missing gauge - current (buggy) behaviour",
+			name:       "missing gauge",
 			vars:       map[string]string{"type": models.Gauge, "name": "DoesNotExist"},
 			wantStatus: http.StatusNotFound,
-			wantBody:   "Gauge not found\n",
+			wantBody:   "Metric not found\n",
 		},
 	}
 

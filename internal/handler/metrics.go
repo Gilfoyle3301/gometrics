@@ -133,6 +133,11 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	metricType := vars["type"]
 	metricName := vars["name"]
 
+	if metricType != models.Gauge && metricType != models.Counter {
+		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		return
+	}
+
 	metric, err := h.storage.Get(r.Context(), metricName, metricType)
 	if err != nil {
 		http.Error(w, "Metric not found", http.StatusNotFound)

@@ -145,14 +145,14 @@ func (a *Agent) reportMetrics(client *http.Client) {
 
 var (
 	address        *string
-	reportInterval *time.Duration
-	pollInterval   *time.Duration
+	reportInterval *int
+	pollInterval   *int
 )
 
 func init() {
 	address = flag.String("a", "http://localhost:8080", "server address")
-	reportInterval = flag.Duration("r", 10*time.Second, "report interval")
-	pollInterval = flag.Duration("p", 2*time.Second, "poll interval")
+	reportInterval = flag.Int("r", 10, "report interval in seconds")
+	pollInterval = flag.Int("p", 2, "poll interval in seconds")
 }
 
 func main() {
@@ -165,13 +165,16 @@ func main() {
 	}
 
 	addr := shared.ValueOr(cfg.Address, *address)
-	pInterval := shared.ValueOr(cfg.PollInterval, *pollInterval)
-	rInterval := shared.ValueOr(cfg.ReportInterval, *reportInterval)
+	pIntervalSec := shared.ValueOr(cfg.PollInterval, *pollInterval)
+	rIntervalSec := shared.ValueOr(cfg.ReportInterval, *reportInterval)
 
-	if pInterval <= 0 || rInterval <= 0 {
+	if pIntervalSec <= 0 || rIntervalSec <= 0 {
 		slog.Error("intervals must be positive")
 		os.Exit(1)
 	}
+
+	pInterval := time.Duration(pIntervalSec) * time.Second
+	rInterval := time.Duration(rIntervalSec) * time.Second
 
 	a := NewAgent(addr)
 

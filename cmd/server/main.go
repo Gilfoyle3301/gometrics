@@ -24,21 +24,12 @@ import (
 )
 
 var (
-	storeInterval   = flag.Duration("i", time.Second*300, "time interval save to file")
+	storeInterval   = flag.Int("i", 300, "time interval save to file in seconds")
 	fileStoragePath = flag.String("s", "", "path save metrics")
 	restore         = flag.Bool("r", false, "restore metrics from file")
 	address         = flag.String("a", "localhost:8080", "server address")
 	dataBaseDSN     = flag.String("d", "", "database DSN")
 )
-
-// func init() {
-// 	storeInterval = flag.Duration("i", time.Second*300, "time interval save to file")
-// 	fileStoragePath = flag.String("s", "", "path save metrics")
-// 	restore = flag.Bool("r", false, "restore metrics from file")
-// 	address = flag.String("a", "localhost:8080", "server address")
-// 	dataBaseDSN = flag.String("d", "", "database DSN")
-
-// }
 
 func main() {
 	flag.Parse()
@@ -51,7 +42,7 @@ func main() {
 	}
 
 	addr := shared.ValueOr(cfg.Address, *address)
-	saveInterval := shared.ValueOr(cfg.StoreInterval, *storeInterval)
+	saveIntervalSec := shared.ValueOr(cfg.StoreInterval, *storeInterval)
 	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
 	needRestore := shared.ValueOr(cfg.Restore, *restore)
 	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
@@ -65,10 +56,12 @@ func main() {
 	defer logger.Sync()
 	sg := logger.Sugar()
 
-	if saveInterval < 0 {
+	if saveIntervalSec < 0 {
 		slog.Error("store interval must not be negative")
 		os.Exit(1)
 	}
+
+	saveInterval := time.Duration(saveIntervalSec) * time.Second
 
 	r := mux.NewRouter()
 
@@ -81,8 +74,8 @@ func main() {
 			return
 		}
 		defer dbpool.Close()
-		dbh := handler.NewDBHandler(dbpool)
-		r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(http.HandlerFunc(dbh.Ping)), sg)).Methods("GET")
+		dbh := handler.NewDBHandler(dbpool, sg)
+		r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(dbh.Ping), sg)).Methods("GET")
 
 	case storagePath != "":
 		if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
