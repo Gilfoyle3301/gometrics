@@ -42,6 +42,23 @@ func (m *MemStorage) applyLocked(metric *Metrics) {
 	}
 }
 
+func (m *MemStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
+	for i := range batch {
+		if err := ValidateMetric(&batch[i]); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for i := range batch {
+		m.applyLocked(&batch[i])
+	}
+
+	return nil
+}
+
 func (m *MemStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

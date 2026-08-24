@@ -99,21 +99,46 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if metric.MType != models.Gauge && metric.MType != models.Counter {
-		http.Error(w, "Unknown metric type", http.StatusBadRequest)
-		return
-	}
-
-	if metric.MType == models.Gauge && metric.Value == nil {
-		http.Error(w, "Invalid gauge value", http.StatusBadRequest)
-		return
-	}
-	if metric.MType == models.Counter && metric.Delta == nil {
-		http.Error(w, "Invalid counter delta", http.StatusBadRequest)
+	if err := models.ValidateMetric(&metric); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if err := h.storage.Update(r.Context(), &metric); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+func (h *Handler) UpdateMetricsBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
+		return
+	}
+
+	var batch []models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&batch); err != nil {
+		http.Error(w, "Invalid metric data", http.StatusBadRequest)
+		return
+	}
+
+	if len(batch) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	for i := range batch {
+		if err := models.ValidateMetric(&batch[i]); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := h.storage.UpdateBatch(r.Context(), batch); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -348,3 +348,120 @@ func TestMainPage(t *testing.T) {
 		assert.Less(t, strings.Index(body, "Alpha"), strings.Index(body, "Zeta"))
 	})
 }
+
+func TestUpdateMetricsBatch(t *testing.T) {
+	t.Run("applies batch in order", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+		addCounter(t, strg, "Counter", 100)
+
+		body := `[
+			{"id":"Counter","type":"counter","delta":1},
+			{"id":"Gauge","type":"gauge","value":1.5},
+			{"id":"Counter","type":"counter","delta":2},
+			{"id":"Gauge","type":"gauge","value":2.5}
+		]`
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		counter, err := strg.Get(context.Background(), "Counter", models.Counter)
+		require.NoError(t, err)
+		require.NotNil(t, counter.Delta)
+		assert.Equal(t, int64(103), *counter.Delta, "counter must accumulate both deltas")
+
+		gauge, err := strg.Get(context.Background(), "Gauge", models.Gauge)
+		require.NoError(t, err)
+		require.NotNil(t, gauge.Value)
+		assert.Equal(t, 2.5, *gauge.Value, "gauge must keep the last value from the batch")
+	})
+
+	t.Run("empty batch is a no-op", func(t *testing.T) {
+		h := New(nil, nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("[]"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		assert.NotPanics(t, func() {
+			h.UpdateMetricsBatch(w, req)
+		})
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("invalid metric rejects the whole batch", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+
+		body := `[
+			{"id":"Valid","type":"counter","delta":1},
+			{"id":"Broken","type":"gauge"}
+		]`
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+
+		_, err := strg.Get(context.Background(), "Valid", models.Counter)
+		assert.Error(t, err, "valid metric from a rejected batch must not be stored")
+	})
+
+	t.Run("invalid content type", func(t *testing.T) {
+		h := New(models.NewMemStorage(), nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("[]"))
+		req.Header.Set("Content-Type", "text/plain")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		h := New(models.NewMemStorage(), nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("{not-json"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("accepts gzip request body", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+
+		raw := `[{"id":"Gauge","type":"gauge","value":4.2}]`
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		_, err := gz.Write([]byte(raw))
+		require.NoError(t, err)
+		require.NoError(t, gz.Close())
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", &buf)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		w := httptest.NewRecorder()
+
+		middlware.Decompress(http.HandlerFunc(h.UpdateMetricsBatch)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		gauge, err := strg.Get(context.Background(), "Gauge", models.Gauge)
+		require.NoError(t, err)
+		require.NotNil(t, gauge.Value)
+		assert.Equal(t, 4.2, *gauge.Value)
+	})
+}

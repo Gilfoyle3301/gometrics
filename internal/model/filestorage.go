@@ -72,6 +72,10 @@ func (fs *FileStorage) Update(ctx context.Context, m *Metrics) error {
 	return fs.memStore.Update(ctx, m)
 }
 
+func (fs *FileStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
+	return fs.memStore.UpdateBatch(ctx, batch)
+}
+
 func (fs *FileStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
 	return fs.memStore.Get(ctx, name, mType)
 }

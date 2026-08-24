@@ -44,6 +44,37 @@ func (s *DBStorage) Update(ctx context.Context, m *Metrics) error {
 	return nil
 }
 
+func (s *DBStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	for i := range batch {
+		if err := ValidateMetric(&batch[i]); err != nil {
+			return err
+		}
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	for i := range batch {
+		m := &batch[i]
+		if _, err := tx.Exec(ctx, upsertMetricSQL, m.ID, m.MType, m.Value, m.Delta); err != nil {
+			return fmt.Errorf("upsert metric %s: %w", m.ID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit batch: %w", err)
+	}
+
+	return nil
+}
+
 func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
 	if mType != Gauge && mType != Counter {
 		return nil, fmt.Errorf("unsupported metric type: %s", mType)

@@ -64,6 +64,51 @@ func TestMemStorageGetAllMetrics(t *testing.T) {
 	require.Len(t, metrics, 2)
 }
 
+func TestMemStorageUpdateBatch(t *testing.T) {
+	t.Run("applies metrics in order", func(t *testing.T) {
+		s := &MemStorage{
+			gauges:   make(map[string]float64),
+			counters: make(map[string]int64),
+		}
+
+		d1, d2 := int64(5), int64(2)
+		batch := []Metrics{
+			{ID: "Counter", MType: Counter, Delta: &d1},
+			{ID: "Gauge", MType: Gauge, Value: float64Ptr(1.0)},
+			{ID: "Counter", MType: Counter, Delta: &d2},
+			{ID: "Gauge", MType: Gauge, Value: float64Ptr(3.0)},
+		}
+
+		require.NoError(t, s.UpdateBatch(context.Background(), batch))
+
+		val, ok := s.GetCounter("Counter")
+		require.True(t, ok)
+		assert.Equal(t, int64(7), val, "counter must accumulate deltas in batch order")
+
+		g, ok := s.GetGauge("Gauge")
+		require.True(t, ok)
+		assert.Equal(t, 3.0, g, "gauge must keep the last value from the batch")
+	})
+
+	t.Run("rejects batch atomically on invalid metric", func(t *testing.T) {
+		s := &MemStorage{
+			gauges:   make(map[string]float64),
+			counters: make(map[string]int64),
+		}
+
+		d := int64(1)
+		batch := []Metrics{
+			{ID: "Counter", MType: Counter, Delta: &d},
+			{ID: "Broken", MType: Gauge},
+		}
+
+		require.Error(t, s.UpdateBatch(context.Background(), batch))
+
+		_, ok := s.GetCounter("Counter")
+		assert.False(t, ok, "nothing from a rejected batch must be applied")
+	})
+}
+
 func TestMemStorageRestore(t *testing.T) {
 	s := &MemStorage{
 		gauges:   make(map[string]float64),

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"flag"
@@ -106,39 +107,58 @@ func (a *Agent) reportMetrics(client *http.Client) {
 		return
 	}
 
+	if len(metrics) == 0 {
+		return
+	}
+
+	body, err := json.Marshal(metrics)
+	if err != nil {
+		slog.Error("failed to marshal metrics", "error", err)
+		return
+	}
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(body); err != nil {
+		slog.Error("failed to compress metrics", "error", err)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		slog.Error("failed to finish compression", "error", err)
+		return
+	}
+
+	updateURL, err := url.JoinPath(a.server, "updates/")
+	if err != nil {
+		slog.Error("failed to build url", "error", err)
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodPost, updateURL, &buf)
+	if err != nil {
+		slog.Error("failed to create request", "error", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Error("failed to send metrics", "error", err)
+		return
+	}
+
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		slog.Error("server returned bad status", "status", resp.Status)
+		return
+	}
+
 	for _, m := range metrics {
-		updateURL, err := url.JoinPath(a.server, "update")
-		if err != nil {
-			slog.Error("failed to build url", "metric", m.ID, "error", err)
-			continue
-		}
-		v, e := json.Marshal(m)
-		if e != nil {
-			slog.Error("failed to marshal metric", "metric", m.ID, "error", e)
-			continue
-		}
-
-		resp, err := client.Post(updateURL, "application/json", bytes.NewBuffer(v))
-		if err != nil {
-			slog.Error("failed to send metric", "metric", m.ID, "error", err)
-			continue
-		}
-
-		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode >= http.StatusBadRequest {
-			slog.Error(
-				"server returned bad status",
-				"metric", m.ID,
-				"status", resp.Status,
-			)
-			continue
-		}
-
 		if m.MType == models.Counter && m.Delta != nil {
-			negDelta := -*m.Delta
-			a.updateCounter(m.ID, negDelta)
+			a.updateCounter(m.ID, -*m.Delta)
 		}
 	}
 }

@@ -139,12 +139,15 @@ func main() {
 
 	updateParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)
 	updateJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)
+	updateBatch := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetricsBatch)), sg)
 	getParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)
 	getJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)
 
 	r.Handle("/update/{type}/{name}/{value}", updateParam).Methods("POST")
 	r.Handle("/update", updateJSON).Methods("POST")
 	r.Handle("/update/", updateJSON).Methods("POST")
+	r.Handle("/updates/", updateBatch).Methods("POST")
+	r.Handle("/updates", updateBatch).Methods("POST")
 	r.Handle("/value/{type}/{name}", getParam).Methods("GET")
 	r.Handle("/value", getJSON).Methods("POST")
 	r.Handle("/value/", getJSON).Methods("POST")
