@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/templates"
 	"github.com/gorilla/mux"
+	"go.uber.org/zap"
 )
 
 var pageTemplate = template.Must(
@@ -27,6 +29,7 @@ type PageData struct {
 
 type metrics struct {
 	storage models.Storage
+	logger  *zap.SugaredLogger
 }
 
 func New(s models.Storage) metrics {
@@ -39,7 +42,7 @@ func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
 		return
 	}
-	// parts := strings.Split(r.URL.Path, "/")
+
 	parts := mux.Vars(r)
 	if len(parts) != expectedParts {
 		http.Error(w, "Not found", http.StatusNotFound)
@@ -92,6 +95,49 @@ func (m *metrics) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func (m *metrics) UpdateMetric(w http.ResponseWriter, r *http.Request) {
+
+	mtr := new(models.Metrics)
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
+		return
+	}
+	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
+		http.Error(w, "Invalid metric data", http.StatusBadRequest)
+		return
+	}
+
+	if mtr.MType != models.Counter && mtr.MType != models.Gauge {
+		http.Error(w, "Unknow metrics name", http.StatusBadRequest)
+		return
+	}
+
+	switch mtr.MType {
+	case models.Gauge:
+		if mtr.Value == nil {
+			http.Error(w, "Invalid gauge value", http.StatusBadRequest)
+			return
+		}
+		m.storage.SetGauge(mtr.ID, *mtr.Value)
+
+	case models.Counter:
+		if mtr.Delta == nil {
+			http.Error(w, "Invalid counter delta", http.StatusBadRequest)
+			return
+		}
+		m.storage.AddCounter(mtr.ID, *mtr.Delta)
+
+	default:
+		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+
+}
+
 func (m *metrics) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	metricType := vars["type"]
@@ -122,6 +168,54 @@ func (m *metrics) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(valueStr))
+
+}
+
+func (m *metrics) GetMetric(w http.ResponseWriter, r *http.Request) {
+
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type header not set to application/json", http.StatusBadRequest)
+		return
+	}
+
+	mtr := new(models.GetMetrics)
+	if err := json.NewDecoder(r.Body).Decode(mtr); err != nil {
+		http.Error(w, "Invalid metric data", http.StatusBadRequest)
+		return
+	}
+	out := new(models.Metrics)
+	switch mtr.MType {
+	case models.Gauge:
+		val, ok := m.storage.GetGauge(mtr.ID)
+		if !ok {
+			http.Error(w, "Gauge not found", http.StatusNotFound)
+			return
+		}
+		out.ID = mtr.ID
+		out.MType = mtr.MType
+		out.Value = &val
+
+	case models.Counter:
+		val, ok := m.storage.GetCounter(mtr.ID)
+		if !ok {
+			http.Error(w, "Counter not found", http.StatusNotFound)
+			return
+		}
+		out.ID = mtr.ID
+		out.MType = mtr.MType
+		out.Delta = &val
+	default:
+		http.Error(w, "Invalid metric type", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(out); err != nil {
+		if m.logger != nil {
+			m.logger.Error("failed to encode response: %v", err)
+		}
+	}
 
 }
 
