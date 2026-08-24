@@ -64,7 +64,6 @@ func main() {
 	saveInterval := time.Duration(saveIntervalSec) * time.Second
 
 	r := mux.NewRouter()
-
 	var storage models.Storage
 	switch {
 	case dataBaseDSN != "":
@@ -125,10 +124,18 @@ func main() {
 	}
 
 	handle := handler.New(storage, sg)
-	r.Handle("/update/{type}/{name}/{value}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)).Methods("POST")
-	r.Handle("/update", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)).Methods("POST")
-	r.Handle("/value/{type}/{name}", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)).Methods("GET")
-	r.Handle("/value", middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)).Methods("POST")
+
+	updateParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)
+	updateJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)
+	getParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetrics)), sg)
+	getJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.GetMetric)), sg)
+
+	r.Handle("/update/{type}/{name}/{value}", updateParam).Methods("POST")
+	r.Handle("/update", updateJSON).Methods("POST")
+	r.Handle("/update/", updateJSON).Methods("POST")
+	r.Handle("/value/{type}/{name}", getParam).Methods("GET")
+	r.Handle("/value", getJSON).Methods("POST")
+	r.Handle("/value/", getJSON).Methods("POST")
 
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
