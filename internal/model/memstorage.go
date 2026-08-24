@@ -21,31 +21,25 @@ func NewMemStorage() Storage {
 }
 
 func (m *MemStorage) Update(ctx context.Context, metric *Metrics) error {
-	if metric == nil {
-		return fmt.Errorf("metric is nil")
+	if err := ValidateMetric(metric); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	switch metric.MType {
-	case Gauge:
-		if metric.Value == nil {
-			return fmt.Errorf("gauge value cannot be nil")
-		}
-		m.gauges[metric.ID] = *metric.Value
-
-	case Counter:
-		if metric.Delta == nil {
-			return fmt.Errorf("counter delta cannot be nil")
-		}
-		m.counters[metric.ID] += *metric.Delta
-
-	default:
-		return fmt.Errorf("unsupported metric type: %s", metric.MType)
-	}
+	m.applyLocked(metric)
 
 	return nil
+}
+
+func (m *MemStorage) applyLocked(metric *Metrics) {
+	switch metric.MType {
+	case Gauge:
+		m.gauges[metric.ID] = *metric.Value
+	case Counter:
+		m.counters[metric.ID] += *metric.Delta
+	}
 }
 
 func (m *MemStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {

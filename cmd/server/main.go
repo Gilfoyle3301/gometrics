@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,9 +18,12 @@ import (
 	"github.com/Gilfoyle3301/gometrics/internal/middlware"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/shared"
+	"github.com/Gilfoyle3301/gometrics/migrations"
 	"github.com/caarlos0/env/v11"
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"go.uber.org/zap"
 )
 
@@ -73,6 +77,14 @@ func main() {
 			return
 		}
 		defer dbpool.Close()
+
+		if err := applyMigrations(dataBaseDSN); err != nil {
+			sg.Error("failed to apply migrations", zap.Error(err))
+			return
+		}
+
+		storage = models.NewDBStorage(dbpool)
+
 		dbh := handler.NewDBHandler(dbpool, sg)
 		r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(dbh.Ping), sg)).Methods("GET")
 
@@ -141,6 +153,25 @@ func main() {
 	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
 		panic(err)
 	}
+}
+
+func applyMigrations(dsn string) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("open database for migrations: %w", err)
+	}
+	defer db.Close()
+
+	goose.SetBaseFS(migrations.FS)
+	if err := goose.SetDialect("postgres"); err != nil {
+		return fmt.Errorf("set goose dialect: %w", err)
+	}
+
+	if err := goose.Up(db, "."); err != nil {
+		return fmt.Errorf("goose up: %w", err)
+	}
+
+	return nil
 }
 
 // func toMetrics(rows []models.Metrics) []models.Metrics {
