@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
+	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -208,6 +210,10 @@ func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
 	}))
 	defer server.Close()
 
+	origDelays := shared.RetryDelays
+	shared.RetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { shared.RetryDelays = origDelays }()
+
 	a := NewAgent(server.URL)
 	a.collectMetrics()
 
@@ -216,6 +222,36 @@ func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		a.reportMetrics(client)
 	})
+}
+
+func TestSendMetricsTransportErrorRetries(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			conn.Close()
+		}
+	}()
+
+	origDelays := shared.RetryDelays
+	shared.RetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { shared.RetryDelays = origDelays }()
+
+	a := NewAgent("http://" + ln.Addr().String())
+	a.collectMetrics()
+
+	client := &http.Client{Timeout: time.Second}
+	a.reportMetrics(client)
+
+	assert.EqualValues(t, 4, accepts.Load(), "first attempt plus three retries on transport error")
 }
 
 func TestAgentConcurrentCollectAndSend(t *testing.T) {

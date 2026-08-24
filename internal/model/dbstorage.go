@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Gilfoyle3301/gometrics/internal/shared"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -32,16 +35,28 @@ const getMetricSQL = `SELECT value, delta FROM metrics WHERE key = $1 AND type =
 
 const getAllMetricsSQL = `SELECT key, type, value, delta FROM metrics ORDER BY key`
 
+// isConnectionError считает повторимыми ошибки транспорта —
+// класс 08 (Connection Exception) PostgreSQL.
+func isConnectionError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgerrcode.IsConnectionException(pgErr.SQLState())
+	}
+
+	return false
+}
+
 func (s *DBStorage) Update(ctx context.Context, m *Metrics) error {
 	if err := ValidateMetric(m); err != nil {
 		return err
 	}
 
-	if _, err := s.pool.Exec(ctx, upsertMetricSQL, m.ID, m.MType, m.Value, m.Delta); err != nil {
-		return fmt.Errorf("upsert metric %s: %w", m.ID, err)
-	}
-
-	return nil
+	return shared.DoWithRetries(ctx, shared.RetryDelays, isConnectionError, func(ctx context.Context) error {
+		if _, err := s.pool.Exec(ctx, upsertMetricSQL, m.ID, m.MType, m.Value, m.Delta); err != nil {
+			return fmt.Errorf("upsert metric %s: %w", m.ID, err)
+		}
+		return nil
+	})
 }
 
 func (s *DBStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
@@ -55,24 +70,26 @@ func (s *DBStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
 		}
 	}
 
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	for i := range batch {
-		m := &batch[i]
-		if _, err := tx.Exec(ctx, upsertMetricSQL, m.ID, m.MType, m.Value, m.Delta); err != nil {
-			return fmt.Errorf("upsert metric %s: %w", m.ID, err)
+	return shared.DoWithRetries(ctx, shared.RetryDelays, isConnectionError, func(ctx context.Context) error {
+		tx, err := s.pool.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
 		}
-	}
+		defer tx.Rollback(ctx)
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit batch: %w", err)
-	}
+		for i := range batch {
+			m := &batch[i]
+			if _, err := tx.Exec(ctx, upsertMetricSQL, m.ID, m.MType, m.Value, m.Delta); err != nil {
+				return fmt.Errorf("upsert metric %s: %w", m.ID, err)
+			}
+		}
 
-	return nil
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit batch: %w", err)
+		}
+
+		return nil
+	})
 }
 
 func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
@@ -80,10 +97,14 @@ func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metric
 		return nil, fmt.Errorf("unsupported metric type: %s", mType)
 	}
 
-	var value *float64
-	var delta *int64
+	var (
+		value *float64
+		delta *int64
+	)
 
-	err := s.pool.QueryRow(ctx, getMetricSQL, name, mType).Scan(&value, &delta)
+	err := shared.DoWithRetries(ctx, shared.RetryDelays, isConnectionError, func(ctx context.Context) error {
+		return s.pool.QueryRow(ctx, getMetricSQL, name, mType).Scan(&value, &delta)
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%s metric %s not found", mType, name)
 	}
@@ -103,37 +124,47 @@ func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metric
 }
 
 func (s *DBStorage) GetAll(ctx context.Context) ([]Metrics, error) {
-	rows, err := s.pool.Query(ctx, getAllMetricsSQL)
+	var result []Metrics
+
+	err := shared.DoWithRetries(ctx, shared.RetryDelays, isConnectionError, func(ctx context.Context) error {
+		rows, err := s.pool.Query(ctx, getAllMetricsSQL)
+		if err != nil {
+			return fmt.Errorf("query all metrics: %w", err)
+		}
+		defer rows.Close()
+
+		metrics := make([]Metrics, 0)
+		for rows.Next() {
+			var (
+				key   string
+				mType string
+				value *float64
+				delta *int64
+			)
+			if err := rows.Scan(&key, &mType, &value, &delta); err != nil {
+				return fmt.Errorf("scan metric row: %w", err)
+			}
+
+			m := Metrics{ID: key, MType: mType}
+			switch mType {
+			case Gauge:
+				m.Value = value
+			case Counter:
+				m.Delta = delta
+			}
+
+			metrics = append(metrics, m)
+		}
+
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate metric rows: %w", err)
+		}
+
+		result = metrics
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("query all metrics: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]Metrics, 0)
-	for rows.Next() {
-		var (
-			key   string
-			mType string
-			value *float64
-			delta *int64
-		)
-		if err := rows.Scan(&key, &mType, &value, &delta); err != nil {
-			return nil, fmt.Errorf("scan metric row: %w", err)
-		}
-
-		m := Metrics{ID: key, MType: mType}
-		switch mType {
-		case Gauge:
-			m.Value = value
-		case Counter:
-			m.Delta = delta
-		}
-
-		result = append(result, m)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate metric rows: %w", err)
+		return nil, err
 	}
 
 	return result, nil

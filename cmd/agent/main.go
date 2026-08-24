@@ -134,22 +134,34 @@ func (a *Agent) reportMetrics(client *http.Client) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodPost, updateURL, &buf)
+	payload := buf.Bytes()
+
+	var resp *http.Response
+	err = shared.DoWithRetries(context.Background(), shared.RetryDelays,
+		func(err error) bool { return err != nil },
+		func(ctx context.Context) error {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bytes.NewReader(payload))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Encoding", "gzip")
+
+			r, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+
+			_, _ = io.Copy(io.Discard, r.Body)
+			r.Body.Close()
+
+			resp = r
+			return nil
+		})
 	if err != nil {
-		slog.Error("failed to create request", "error", err)
+		slog.Error("failed to send metrics after retries", "error", err)
 		return
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Content-Encoding", "gzip")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		slog.Error("failed to send metrics", "error", err)
-		return
-	}
-
-	_, _ = io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		slog.Error("server returned bad status", "status", resp.Status)
