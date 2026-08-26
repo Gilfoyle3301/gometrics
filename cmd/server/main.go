@@ -33,6 +33,7 @@ var (
 	restore         = flag.Bool("r", false, "restore metrics from file")
 	address         = flag.String("a", "localhost:8080", "server address")
 	dataBaseDSN     = flag.String("d", "", "database DSN")
+	keyFlag         = flag.String("k", "", "secret key for data signing")
 )
 
 func main() {
@@ -50,6 +51,7 @@ func main() {
 	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
 	needRestore := shared.ValueOr(cfg.Restore, *restore)
 	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
+	key := shared.ValueOr(cfg.Key, *keyFlag)
 
 	ctx := context.Background()
 
@@ -153,7 +155,16 @@ func main() {
 	r.Handle("/value/", getJSON).Methods("POST")
 
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
-	if err := http.ListenAndServe(addr, middlware.GunZipMiddlware(r)); err != nil {
+
+	// Порядок обёрток: проверка подписи запроса видит исходные байты тела
+	// до декомпрессии, а подпись ответа считается по финальным байтам
+	// (уже сжатым, если клиент принимает gzip).
+	var root http.Handler = r
+	root = middlware.RequestHashMiddlware(root, key)
+	root = middlware.GunZipMiddlware(root)
+	root = middlware.ResponseHashMiddlware(root, key)
+
+	if err := http.ListenAndServe(addr, root); err != nil {
 		panic(err)
 	}
 }

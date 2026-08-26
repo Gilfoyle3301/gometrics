@@ -14,6 +14,8 @@ func TestNewConfig(t *testing.T) {
 	assert.Nil(t, cfg.Address)
 	assert.Nil(t, cfg.ReportInterval)
 	assert.Nil(t, cfg.PollInterval)
+	assert.Nil(t, cfg.Key)
+	assert.Nil(t, cfg.RateLimit)
 }
 
 func TestNormalizeAddress(t *testing.T) {
