@@ -1,7 +1,11 @@
 package main
 
 import (
+	"compress/gzip"
+	"context"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
+	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,26 +30,36 @@ func TestCollectMetrics(t *testing.T) {
 
 	a.collectMetrics()
 
-	metrics := a.storage.GetAllMetrics()
+	metrics, err := a.storage.GetAll(context.Background())
+	require.NoError(t, err)
 	require.NotEmpty(t, metrics)
 
-	byName := make(map[string]any, len(metrics))
+	byName := make(map[string]models.Metrics, len(metrics))
 	for _, m := range metrics {
-		byName[m.Name] = m.Value
+		byName[m.ID] = m
 	}
 
 	for _, name := range []string{
 		"Alloc", "HeapAlloc", "HeapSys", "NumGC", "RandomValue", "TotalAlloc",
 	} {
-		_, ok := byName[name]
+		m, ok := byName[name]
 		assert.Truef(t, ok, "expected gauge %q to be present", name)
+		if ok {
+			assert.Equal(t, models.Gauge, m.MType)
+			require.NotNil(t, m.Value)
+		}
 	}
-	pollCount, ok := byName["PollCount"]
-	require.True(t, ok, "PollCount must be present")
-	assert.EqualValues(t, 1, pollCount)
 
-	rv, ok := byName["RandomValue"].(float64)
-	require.True(t, ok, "RandomValue must be float64")
+	pollCountMetric, ok := byName["PollCount"]
+	require.True(t, ok, "PollCount must be present")
+	assert.Equal(t, models.Counter, pollCountMetric.MType)
+	require.NotNil(t, pollCountMetric.Delta)
+	assert.EqualValues(t, 1, *pollCountMetric.Delta)
+
+	rvMetric, ok := byName["RandomValue"]
+	require.True(t, ok, "RandomValue must be present")
+	require.NotNil(t, rvMetric.Value)
+	rv := *rvMetric.Value
 	assert.GreaterOrEqual(t, rv, 0.0)
 	assert.Less(t, rv, 1.0)
 }
@@ -56,9 +71,11 @@ func TestCollectMetricsPollCountAccumulates(t *testing.T) {
 	for range iterations {
 		a.collectMetrics()
 	}
-	pollCount, ok := a.storage.GetCounter("PollCount")
-	require.True(t, ok, "PollCount must be present")
-	assert.EqualValues(t, iterations, pollCount)
+
+	m, err := a.storage.Get(context.Background(), "PollCount", models.Counter)
+	require.NoError(t, err, "PollCount must be present")
+	require.NotNil(t, m.Delta)
+	assert.EqualValues(t, iterations, *m.Delta)
 }
 
 func TestDefaultAddressHasScheme(t *testing.T) {
@@ -71,6 +88,8 @@ func TestSendMetricsSuccess(t *testing.T) {
 		requestCount int
 		gaugeCount   int
 		counterCount int
+		received     []models.Metrics
+		gzipEncoded  bool
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,24 +97,38 @@ func TestSendMetricsSuccess(t *testing.T) {
 		defer mu.Unlock()
 
 		assert.Equal(t, http.MethodPost, r.Method)
-		assert.Equal(t, "/update", r.URL.Path)
+		assert.Contains(t, []string{"/updates", "/updates/"}, r.URL.Path)
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 
-		var m models.Metrics
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&m))
-		switch m.MType {
-		case models.Gauge:
-			require.NotNil(t, m.Value)
-			assert.Nil(t, m.Delta)
-			gaugeCount++
-		case models.Counter:
-			require.NotNil(t, m.Delta)
-			assert.Nil(t, m.Value)
-			counterCount++
-		default:
-			t.Fatalf("unknown metric type %q", m.MType)
+		var body io.Reader = r.Body
+		if r.Header.Get("Content-Encoding") == "gzip" {
+			gzipEncoded = true
+			gz, err := gzip.NewReader(r.Body)
+			require.NoError(t, err)
+			defer gz.Close()
+			body = gz
 		}
 
+		var batch []models.Metrics
+		require.NoError(t, json.NewDecoder(body).Decode(&batch))
+		require.NotEmpty(t, batch)
+
+		for _, m := range batch {
+			switch m.MType {
+			case models.Gauge:
+				require.NotNil(t, m.Value)
+				assert.Nil(t, m.Delta)
+				gaugeCount++
+			case models.Counter:
+				require.NotNil(t, m.Delta)
+				assert.Nil(t, m.Value)
+				counterCount++
+			default:
+				t.Fatalf("unknown metric type %q", m.MType)
+			}
+		}
+
+		received = batch
 		requestCount++
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -104,7 +137,9 @@ func TestSendMetricsSuccess(t *testing.T) {
 	a := NewAgent(server.URL)
 	a.collectMetrics()
 
-	expectedCount := len(a.storage.GetAllMetrics())
+	metrics, err := a.storage.GetAll(context.Background())
+	require.NoError(t, err)
+	expectedCount := len(metrics)
 	require.Greater(t, expectedCount, 0)
 
 	client := &http.Client{Timeout: time.Second}
@@ -112,12 +147,36 @@ func TestSendMetricsSuccess(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, expectedCount, requestCount, "expected one request per collected metric")
+	assert.Equal(t, 1, requestCount, "expected a single batch request")
+	assert.Len(t, received, expectedCount, "batch must contain all collected metrics")
 	assert.Greater(t, gaugeCount, 0)
 	assert.Greater(t, counterCount, 0)
+	assert.True(t, gzipEncoded, "batch request must be gzip-encoded")
+
+	pollCount, err := a.storage.Get(context.Background(), "PollCount", models.Counter)
+	require.NoError(t, err)
+	require.NotNil(t, pollCount.Delta)
+	assert.EqualValues(t, 0, *pollCount.Delta, "counters must be reset after successful send")
 }
 
-func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
+func TestSendMetricsEmptyBatchIsNotSent(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a := NewAgent(server.URL)
+	client := &http.Client{Timeout: time.Second}
+
+	a.reportMetrics(client)
+
+	assert.EqualValues(t, 0, requestCount.Load(), "empty batch must not be sent")
+}
+
+func TestSendMetricsServerErrorKeepsCounters(t *testing.T) {
 	var requestCount atomic.Int32
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -128,7 +187,6 @@ func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
 
 	a := NewAgent(server.URL)
 	a.collectMetrics()
-	expectedCount := len(a.storage.GetAllMetrics())
 
 	client := &http.Client{Timeout: time.Second}
 
@@ -136,8 +194,13 @@ func TestSendMetricsServerReturnsErrorDoesNotStopSending(t *testing.T) {
 		a.reportMetrics(client)
 	})
 
-	assert.EqualValues(t, expectedCount, requestCount.Load(),
-		"5xx response must not stop sending remaining metrics")
+	assert.EqualValues(t, 1, requestCount.Load(), "expected a single batch request")
+
+	pollCount, err := a.storage.Get(context.Background(), "PollCount", models.Counter)
+	require.NoError(t, err)
+	require.NotNil(t, pollCount.Delta)
+	assert.EqualValues(t, 1, *pollCount.Delta,
+		"counters must not be reset when the server returns an error")
 }
 
 func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
@@ -147,6 +210,10 @@ func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
 	}))
 	defer server.Close()
 
+	origDelays := shared.RetryDelays
+	shared.RetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { shared.RetryDelays = origDelays }()
+
 	a := NewAgent(server.URL)
 	a.collectMetrics()
 
@@ -155,6 +222,36 @@ func TestSendMetricsTimeoutDoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		a.reportMetrics(client)
 	})
+}
+
+func TestSendMetricsTransportErrorRetries(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	var accepts atomic.Int32
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepts.Add(1)
+			conn.Close()
+		}
+	}()
+
+	origDelays := shared.RetryDelays
+	shared.RetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	defer func() { shared.RetryDelays = origDelays }()
+
+	a := NewAgent("http://" + ln.Addr().String())
+	a.collectMetrics()
+
+	client := &http.Client{Timeout: time.Second}
+	a.reportMetrics(client)
+
+	assert.EqualValues(t, 4, accepts.Load(), "first attempt plus three retries on transport error")
 }
 
 func TestAgentConcurrentCollectAndSend(t *testing.T) {
@@ -197,5 +294,4 @@ func TestAgentConcurrentCollectAndSend(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
-
 }

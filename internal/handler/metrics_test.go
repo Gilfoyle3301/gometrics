@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,29 @@ import (
 	"github.com/Gilfoyle3301/gometrics/internal/middlware"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 )
+
+func float64Ptr(v float64) *float64 { p := new(float64); *p = v; return p }
+func int64Ptr(v int64) *int64       { p := new(int64); *p = v; return p }
+
+func setGauge(t *testing.T, s models.Storage, name string, val float64) {
+	t.Helper()
+	err := s.Update(context.Background(), &models.Metrics{
+		ID:    name,
+		MType: models.Gauge,
+		Value: float64Ptr(val),
+	})
+	require.NoError(t, err)
+}
+
+func addCounter(t *testing.T, s models.Storage, name string, val int64) {
+	t.Helper()
+	err := s.Update(context.Background(), &models.Metrics{
+		ID:    name,
+		MType: models.Counter,
+		Delta: int64Ptr(val),
+	})
+	require.NoError(t, err)
+}
 
 func newRequest(method, target string, vars map[string]string, contentType string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
@@ -40,9 +64,11 @@ func TestUpdateMetrics(t *testing.T) {
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s models.Storage) {
-				val, ok := s.GetGauge("Alloc")
-				assert.True(t, ok)
-				assert.Equal(t, 123.45, val)
+				val, err := s.Get(context.Background(), "Alloc", models.Gauge)
+				require.NoError(t, err)
+				require.NotNil(t, val)
+				require.NotNil(t, val.Value)
+				assert.Equal(t, 123.45, *val.Value)
 			},
 		},
 		{
@@ -51,9 +77,11 @@ func TestUpdateMetrics(t *testing.T) {
 			contentType: "text/plain",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s models.Storage) {
-				val, ok := s.GetCounter("PollCount")
-				assert.True(t, ok)
-				assert.Equal(t, int64(10), val)
+				val, err := s.Get(context.Background(), "PollCount", models.Counter)
+				require.NoError(t, err)
+				require.NotNil(t, val)
+				require.NotNil(t, val.Delta)
+				assert.Equal(t, int64(10), *val.Delta)
 			},
 		},
 		{
@@ -63,10 +91,10 @@ func TestUpdateMetrics(t *testing.T) {
 			wantStatus:  http.StatusOK,
 		},
 		{
-			name:        "invalid content type",
+			name:        "any content type accepted for param update",
 			vars:        map[string]string{"type": models.Gauge, "name": "Alloc", "value": "1"},
 			contentType: "application/json",
-			wantStatus:  http.StatusBadRequest,
+			wantStatus:  http.StatusOK,
 		},
 		{
 			name:        "unknown metric type",
@@ -102,7 +130,7 @@ func TestUpdateMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := New(strg)
+			h := New(strg, nil)
 			req := newRequest(http.MethodPost, "/update", tt.vars, tt.contentType)
 			w := httptest.NewRecorder()
 
@@ -130,9 +158,11 @@ func TestUpdateMetric(t *testing.T) {
 			contentType: "application/json",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s models.Storage) {
-				val, ok := s.GetGauge("Alloc")
-				assert.True(t, ok)
-				assert.Equal(t, 123.45, val)
+				val, err := s.Get(context.Background(), "Alloc", models.Gauge)
+				require.NoError(t, err)
+				require.NotNil(t, val)
+				require.NotNil(t, val.Value)
+				assert.Equal(t, 123.45, *val.Value)
 			},
 		},
 		{
@@ -141,9 +171,11 @@ func TestUpdateMetric(t *testing.T) {
 			contentType: "application/json",
 			wantStatus:  http.StatusOK,
 			check: func(t *testing.T, s models.Storage) {
-				val, ok := s.GetCounter("PollCount")
-				assert.True(t, ok)
-				assert.Equal(t, int64(10), val)
+				val, err := s.Get(context.Background(), "PollCount", models.Counter)
+				require.NoError(t, err)
+				require.NotNil(t, val)
+				require.NotNil(t, val.Delta)
+				assert.Equal(t, int64(10), *val.Delta)
 			},
 		},
 		{
@@ -168,7 +200,7 @@ func TestUpdateMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			h := New(models.NewMemStorage())
+			h := New(models.NewMemStorage(), nil)
 			req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewBufferString(tt.body))
 			req.Header.Set("Content-Type", tt.contentType)
 			w := httptest.NewRecorder()
@@ -190,8 +222,9 @@ func TestGetMetricGzip(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, gz.Close())
 
-	h := New(models.NewMemStorage())
-	h.storage.SetGauge("Alloc", 42.5)
+	h := New(models.NewMemStorage(), nil)
+	setGauge(t, h.storage, "Alloc", 42.5)
+
 	req := httptest.NewRequest(http.MethodPost, "/value", &buf)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
@@ -219,8 +252,9 @@ func (f *failWriter) Write(b []byte) (int, error) {
 }
 
 func TestGetMetricEncodeErrorWithNilLoggerDoesNotPanic(t *testing.T) {
-	h := New(models.NewMemStorage())
-	h.storage.SetGauge("Alloc", 42.5)
+	h := New(models.NewMemStorage(), nil)
+	setGauge(t, h.storage, "Alloc", 42.5)
+
 	req := httptest.NewRequest(http.MethodPost, "/value", bytes.NewBufferString(`{"id":"Alloc","type":"gauge"}`))
 	req.Header.Set("Content-Type", "application/json")
 	w := &failWriter{header: make(http.Header)}
@@ -231,9 +265,9 @@ func TestGetMetricEncodeErrorWithNilLoggerDoesNotPanic(t *testing.T) {
 }
 
 func TestGetMetrics(t *testing.T) {
-	h := New(models.NewMemStorage())
-	h.storage.SetGauge("Alloc", 42.5)
-	h.storage.AddCounter("PollCount", 7)
+	h := New(models.NewMemStorage(), nil)
+	setGauge(t, h.storage, "Alloc", 42.5)
+	addCounter(t, h.storage, "PollCount", 7)
 
 	tests := []struct {
 		name       string
@@ -259,10 +293,10 @@ func TestGetMetrics(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "missing gauge - current (buggy) behaviour",
+			name:       "missing gauge",
 			vars:       map[string]string{"type": models.Gauge, "name": "DoesNotExist"},
 			wantStatus: http.StatusNotFound,
-			wantBody:   "Gauge not found\n",
+			wantBody:   "Metric not found\n",
 		},
 	}
 
@@ -283,7 +317,7 @@ func TestGetMetrics(t *testing.T) {
 
 func TestMainPage(t *testing.T) {
 	t.Run("renders empty state", func(t *testing.T) {
-		h := New(models.NewMemStorage())
+		h := New(models.NewMemStorage(), nil)
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
 
@@ -294,10 +328,10 @@ func TestMainPage(t *testing.T) {
 	})
 
 	t.Run("renders metrics sorted by name", func(t *testing.T) {
-		h := New(models.NewMemStorage())
-		h.storage.SetGauge("Zeta", 1.1)
-		h.storage.SetGauge("Alpha", 2.2)
-		h.storage.AddCounter("PollCount", 3)
+		h := New(models.NewMemStorage(), nil)
+		setGauge(t, h.storage, "Zeta", 1.1)
+		setGauge(t, h.storage, "Alpha", 2.2)
+		addCounter(t, h.storage, "PollCount", 3)
 
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
 		w := httptest.NewRecorder()
@@ -312,5 +346,122 @@ func TestMainPage(t *testing.T) {
 		assert.Contains(t, body, "PollCount")
 
 		assert.Less(t, strings.Index(body, "Alpha"), strings.Index(body, "Zeta"))
+	})
+}
+
+func TestUpdateMetricsBatch(t *testing.T) {
+	t.Run("applies batch in order", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+		addCounter(t, strg, "Counter", 100)
+
+		body := `[
+			{"id":"Counter","type":"counter","delta":1},
+			{"id":"Gauge","type":"gauge","value":1.5},
+			{"id":"Counter","type":"counter","delta":2},
+			{"id":"Gauge","type":"gauge","value":2.5}
+		]`
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		counter, err := strg.Get(context.Background(), "Counter", models.Counter)
+		require.NoError(t, err)
+		require.NotNil(t, counter.Delta)
+		assert.Equal(t, int64(103), *counter.Delta, "counter must accumulate both deltas")
+
+		gauge, err := strg.Get(context.Background(), "Gauge", models.Gauge)
+		require.NoError(t, err)
+		require.NotNil(t, gauge.Value)
+		assert.Equal(t, 2.5, *gauge.Value, "gauge must keep the last value from the batch")
+	})
+
+	t.Run("empty batch is a no-op", func(t *testing.T) {
+		h := New(nil, nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("[]"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		assert.NotPanics(t, func() {
+			h.UpdateMetricsBatch(w, req)
+		})
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("invalid metric rejects the whole batch", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+
+		body := `[
+			{"id":"Valid","type":"counter","delta":1},
+			{"id":"Broken","type":"gauge"}
+		]`
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+
+		_, err := strg.Get(context.Background(), "Valid", models.Counter)
+		assert.Error(t, err, "valid metric from a rejected batch must not be stored")
+	})
+
+	t.Run("invalid content type", func(t *testing.T) {
+		h := New(models.NewMemStorage(), nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("[]"))
+		req.Header.Set("Content-Type", "text/plain")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("invalid json", func(t *testing.T) {
+		h := New(models.NewMemStorage(), nil)
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", strings.NewReader("{not-json"))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		h.UpdateMetricsBatch(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("accepts gzip request body", func(t *testing.T) {
+		strg := models.NewMemStorage()
+		h := New(strg, nil)
+
+		raw := `[{"id":"Gauge","type":"gauge","value":4.2}]`
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		_, err := gz.Write([]byte(raw))
+		require.NoError(t, err)
+		require.NoError(t, gz.Close())
+
+		req := httptest.NewRequest(http.MethodPost, "/updates/", &buf)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Encoding", "gzip")
+		w := httptest.NewRecorder()
+
+		middlware.Decompress(http.HandlerFunc(h.UpdateMetricsBatch)).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+
+		gauge, err := strg.Get(context.Background(), "Gauge", models.Gauge)
+		require.NoError(t, err)
+		require.NotNil(t, gauge.Value)
+		assert.Equal(t, 4.2, *gauge.Value)
 	})
 }
