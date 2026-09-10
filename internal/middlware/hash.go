@@ -2,31 +2,41 @@ package middlware
 
 import (
 	"bytes"
+	"crypto/hmac"
 	"io"
 	"net/http"
 
 	"github.com/Gilfoyle3301/gometrics/internal/shared"
 )
 
-// RequestHashMiddlware проверяет подпись входящего запроса.
-// Проверка срабатывает, только если задан ключ и в запросе есть заголовок
-// подписи: неподписанные запросы продолжают обрабатываться ради обратной
-// совместимости со старыми клиентами.
+// maxRequestBodySize ограничивает чтение тела при проверке подписи: хеш
+// считается от всего тела, и без лимита один запрос произвольного размера
+// выедает память процесса.
+const maxRequestBodySize = 10 << 20 // 10 MiB
+
+// RequestHashMiddlware проверяет подпись входящего запроса. Проверка включается
+// только при заданном ключе.
+//
+// По умолчанию запрос без заголовка подписи проходит: автотест 14-го инкремента
+// сам шлёт на сервер с ключом неподписанные запросы и ждёт 200/404, поэтому
+// жёсткое отклонение ломает приёмку. Для контура, где неподписанные запросы
+// недопустимы, есть strict — с ним отсутствие заголовка тоже даёт 400.
+//
 // Тело читается целиком до мидлвара декомпрессии, поэтому хеш считается
 // от исходных байтов запроса — тех же, что подписывает агент.
-func RequestHashMiddlware(h http.Handler, key string) http.Handler {
+func RequestHashMiddlware(h http.Handler, key string, strict bool) http.Handler {
 	if key == "" {
 		return h
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		headerHash := r.Header.Get(shared.HashHeader)
-		if headerHash == "" {
+		if headerHash == "" && !strict {
 			h.ServeHTTP(w, r)
 			return
 		}
 
-		body, err := io.ReadAll(r.Body)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBodySize))
 		if err != nil {
 			http.Error(w, "failed to read body", http.StatusBadRequest)
 			return
@@ -34,7 +44,9 @@ func RequestHashMiddlware(h http.Handler, key string) http.Handler {
 		r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewReader(body))
 
-		if shared.CalcHash(body, key) != headerHash {
+		// hmac.Equal — константное по времени сравнение: обычный != позволяет
+		// подбирать подпись посимвольно по времени ответа.
+		if !hmac.Equal([]byte(shared.CalcHash(body, key)), []byte(headerHash)) {
 			http.Error(w, "bad hash", http.StatusBadRequest)
 			return
 		}

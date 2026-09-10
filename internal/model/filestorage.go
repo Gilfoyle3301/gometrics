@@ -5,61 +5,84 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
-
-	"go.uber.org/zap"
 )
 
+var _ Storage = (*FileStorage)(nil)
+
+// FileStorage держит метрики в памяти и периодически сбрасывает снимок в файл.
+// Доступ к метрикам наследуется от встроенного *MemStorage, поэтому здесь
+// определены только файловые операции.
+//
+// Жизненный цикл: NewFileStorage → StartSync → Close. Close останавливает
+// фоновое сохранение, дожидается его завершения и делает финальный сброс;
+// повторный вызов безопасен.
 type FileStorage struct {
-	memStore   *MemStorage
-	file       *os.File
-	mu         sync.RWMutex
-	saveTicker *time.Ticker
-	stopChan   chan struct{}
-	logger     *zap.SugaredLogger
+	*MemStorage
+
+	// fileMu сериализует файловый I/O: тиковое сохранение не должно
+	// пересекаться с финальным в Close.
+	fileMu    sync.Mutex
+	file      *os.File
+	stopChan  chan struct{}
+	closeOnce sync.Once
+	syncWG    sync.WaitGroup
 }
 
+// NewFileStorage открывает (при необходимости создаёт) файл хранилища.
+// Все ошибки возвращаются наружу: решать, фатальны ли они, — задача вызывающего.
 func NewFileStorage(memStore *MemStorage, filePath string, restore bool) (*FileStorage, error) {
 	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-		slog.Error("failed to create storage directory", "error", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("create storage directory: %w", err)
 	}
 
 	storageFile, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		slog.Error("failed to open file", "error", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("open storage file: %w", err)
 	}
+
 	fs := &FileStorage{
-		memStore: memStore,
-		file:     storageFile,
-		stopChan: make(chan struct{}),
+		MemStorage: memStore,
+		file:       storageFile,
+		stopChan:   make(chan struct{}),
 	}
+
 	if restore {
 		if err := fs.load(); err != nil {
 			storageFile.Close()
-			return nil, fmt.Errorf("load from file: %w", err)
+			return nil, fmt.Errorf("load metrics: %w", err)
 		}
 	}
 
 	return fs, nil
 }
 
-func (fs *FileStorage) StartSync(interval time.Duration) {
+// StartSync запускает фоновое сохранение раз в interval. Интервал <= 0
+// отключает фоновый режим — данные сохранятся только в Close. Ошибки
+// сохранения передаются в onError; nil-колбэк допустим.
+//
+// StartSync вызывается один раз до Close.
+func (fs *FileStorage) StartSync(interval time.Duration, onError func(error)) {
 	if interval <= 0 {
 		return
 	}
-	fs.saveTicker = time.NewTicker(interval)
+
+	fs.syncWG.Add(1)
 	go func() {
+		defer fs.syncWG.Done()
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
 		for {
 			select {
-			case <-fs.saveTicker.C:
-				if err := fs.save(); err != nil {
-					fs.logger.Errorf("failed to save metrics: %v\n", err)
+			case <-ticker.C:
+				err := fs.save()
+				if err != nil && onError != nil {
+					onError(err)
 				}
 			case <-fs.stopChan:
 				return
@@ -68,44 +91,38 @@ func (fs *FileStorage) StartSync(interval time.Duration) {
 	}()
 }
 
-func (fs *FileStorage) Update(ctx context.Context, m *Metrics) error {
-	return fs.memStore.Update(ctx, m)
-}
-
-func (fs *FileStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
-	return fs.memStore.UpdateBatch(ctx, batch)
-}
-
-func (fs *FileStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
-	return fs.memStore.Get(ctx, name, mType)
-}
-
-func (fs *FileStorage) GetAll(ctx context.Context) ([]Metrics, error) {
-	return fs.memStore.GetAll(ctx)
-}
-
-func (fs *FileStorage) Ping(ctx context.Context) error {
-	return nil
-}
-
+// Close останавливает фоновое сохранение и делает финальный сброс снимка.
+// Идемпотентен: повторный вызов возвращает nil и не трогает закрытый файл.
 func (fs *FileStorage) Close() error {
-	if fs.saveTicker != nil {
-		fs.saveTicker.Stop()
-	}
-	close(fs.stopChan)
+	var closeErr error
 
-	if err := fs.save(); err != nil {
-		fs.file.Close()
-		return fmt.Errorf("final save: %w", err)
-	}
+	fs.closeOnce.Do(func() {
+		close(fs.stopChan)
+		fs.syncWG.Wait()
 
-	return fs.file.Close()
+		fs.fileMu.Lock()
+		defer fs.fileMu.Unlock()
+
+		if err := fs.saveLocked(); err != nil {
+			fs.file.Close()
+			closeErr = fmt.Errorf("final save: %w", err)
+			return
+		}
+
+		closeErr = fs.file.Close()
+	})
+
+	return closeErr
+}
+
+func (fs *FileStorage) save() error {
+	fs.fileMu.Lock()
+	defer fs.fileMu.Unlock()
+
+	return fs.saveLocked()
 }
 
 func (fs *FileStorage) load() error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
 	data, err := io.ReadAll(fs.file)
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
@@ -115,27 +132,14 @@ func (fs *FileStorage) load() error {
 		return nil
 	}
 
-	var metrics []Metrics
-	if err := json.Unmarshal(data, &metrics); err != nil {
-		return fmt.Errorf("unmarshal metrics: %w", err)
-	}
-
-	ctx := context.Background()
-	for _, m := range metrics {
-		if err := fs.memStore.Update(ctx, &m); err != nil {
-			return fmt.Errorf("restore metric %s: %w", m.ID, err)
-		}
-	}
-
-	return nil
+	// Restore, а не поштучный Update: счётчики восстанавливаются присваиванием
+	// сохранённого значения, иначе повторное чтение файла накрутило бы их дважды.
+	return fs.MemStorage.Restore(data)
 }
 
-func (fs *FileStorage) save() error {
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	ctx := context.Background()
-	metrics, err := fs.memStore.GetAll(ctx)
+// saveLocked перезаписывает файл текущим снимком метрик. Вызывается под fileMu.
+func (fs *FileStorage) saveLocked() error {
+	metrics, err := fs.MemStorage.GetAll(context.Background())
 	if err != nil {
 		return fmt.Errorf("get all metrics: %w", err)
 	}

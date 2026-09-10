@@ -22,7 +22,7 @@ func TestRequestHashMiddlware(t *testing.T) {
 	})
 
 	t.Run("valid hash passes and body stays intact", func(t *testing.T) {
-		h := RequestHashMiddlware(inner, key)
+		h := RequestHashMiddlware(inner, key, false)
 
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
 		req.Header.Set(shared.HashHeader, shared.CalcHash([]byte("payload"), key))
@@ -35,7 +35,7 @@ func TestRequestHashMiddlware(t *testing.T) {
 	})
 
 	t.Run("invalid hash is rejected", func(t *testing.T) {
-		h := RequestHashMiddlware(inner, key)
+		h := RequestHashMiddlware(inner, key, false)
 
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
 		req.Header.Set(shared.HashHeader, "deadbeef")
@@ -46,8 +46,11 @@ func TestRequestHashMiddlware(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 
-	t.Run("request without hash header passes for backward compatibility", func(t *testing.T) {
-		h := RequestHashMiddlware(inner, key)
+	// Поведение зафиксировано автотестом 14-го инкремента: он шлёт на сервер
+	// с ключом запросы без HashSHA256 и ждёт 200/404. Жёсткое отклонение
+	// неподписанных запросов по умолчанию ломает приёмку — для него есть strict.
+	t.Run("request without hash header passes unless strict mode is on", func(t *testing.T) {
+		h := RequestHashMiddlware(inner, key, false)
 
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
 		rec := httptest.NewRecorder()
@@ -58,8 +61,32 @@ func TestRequestHashMiddlware(t *testing.T) {
 		assert.Equal(t, "payload", rec.Body.String())
 	})
 
+	t.Run("strict mode rejects request without hash header", func(t *testing.T) {
+		h := RequestHashMiddlware(inner, key, true)
+
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+	})
+
+	t.Run("strict mode accepts valid hash", func(t *testing.T) {
+		h := RequestHashMiddlware(inner, key, true)
+
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
+		req.Header.Set(shared.HashHeader, shared.CalcHash([]byte("payload"), key))
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "payload", rec.Body.String())
+	})
+
 	t.Run("empty key disables the check", func(t *testing.T) {
-		h := RequestHashMiddlware(inner, "")
+		h := RequestHashMiddlware(inner, "", false)
 
 		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("payload"))
 		req.Header.Set(shared.HashHeader, "deadbeef")
@@ -68,6 +95,19 @@ func TestRequestHashMiddlware(t *testing.T) {
 		h.ServeHTTP(rec, req)
 
 		assert.Equal(t, http.StatusOK, rec.Code)
+	})
+
+	t.Run("oversized body is rejected", func(t *testing.T) {
+		h := RequestHashMiddlware(inner, key, false)
+
+		body := strings.Repeat("x", maxRequestBodySize+1)
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		req.Header.Set(shared.HashHeader, shared.CalcHash([]byte(body), key))
+		rec := httptest.NewRecorder()
+
+		h.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
 	})
 }
 

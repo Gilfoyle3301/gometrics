@@ -3,14 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Gilfoyle3301/gometrics/internal/config/server"
@@ -34,7 +34,11 @@ var (
 	address         = flag.String("a", "localhost:8080", "server address")
 	dataBaseDSN     = flag.String("d", "", "database DSN")
 	keyFlag         = flag.String("k", "", "secret key for data signing")
+	strictSignature = flag.Bool("strict-signature", false, "reject requests without a valid signature")
 )
+
+// shutdownTimeout — сколько ждём завершения активных запросов после сигнала.
+const shutdownTimeout = 5 * time.Second
 
 func main() {
 	flag.Parse()
@@ -52,6 +56,7 @@ func main() {
 	needRestore := shared.ValueOr(cfg.Restore, *restore)
 	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
 	key := shared.ValueOr(cfg.Key, *keyFlag)
+	requireSignature := shared.ValueOr(cfg.SignatureRequired, *strictSignature)
 
 	ctx := context.Background()
 
@@ -91,47 +96,17 @@ func main() {
 		r.Handle("/ping", middlware.LoggerMiddlware(http.HandlerFunc(dbh.Ping), sg)).Methods("GET")
 
 	case storagePath != "":
-		if err := os.MkdirAll(filepath.Dir(storagePath), 0755); err != nil {
-			slog.Error("failed to create storage directory", "error", err)
-			os.Exit(1)
-		}
-
-		storageFile, err := os.OpenFile(storagePath, os.O_RDWR|os.O_CREATE, 0644)
+		fileStore, err := models.NewFileStorage(models.NewMemStorage(), storagePath, needRestore)
 		if err != nil {
-			slog.Error("failed to open file", "error", err)
+			sg.Errorw("failed to init file storage", "error", err)
 			os.Exit(1)
 		}
-		defer storageFile.Close()
 
-		memStore := models.NewMemStorage()
+		fileStore.StartSync(saveInterval, func(err error) {
+			sg.Errorw("failed to save metrics", "error", err)
+		})
 
-		if needRestore {
-			data, err := io.ReadAll(storageFile)
-			if err != nil {
-				slog.Error("failed to read file", "error", err)
-			} else if len(data) > 0 {
-				if ms, ok := memStore.(*models.MemStorage); ok {
-					if err := ms.Restore(data); err != nil {
-						slog.Error("failed to restore metrics", "error", err)
-					}
-				}
-			}
-		}
-
-		storage = memStore
-
-		if saveInterval > 0 {
-			saveTicker := time.NewTicker(saveInterval)
-			defer saveTicker.Stop()
-
-			go func() {
-				for range saveTicker.C {
-					if err := saveMetrics(ctx, storageFile, memStore); err != nil {
-						sg.Error("failed to save metrics", "error", err)
-					}
-				}
-			}()
-		}
+		storage = fileStore
 
 	default:
 		storage = models.NewMemStorage()
@@ -156,16 +131,47 @@ func main() {
 
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 
-	// Порядок обёрток: проверка подписи запроса видит исходные байты тела
-	// до декомпрессии, а подпись ответа считается по финальным байтам
-	// (уже сжатым, если клиент принимает gzip).
 	var root http.Handler = r
-	root = middlware.RequestHashMiddlware(root, key)
+	root = middlware.RequestHashMiddlware(root, key, requireSignature)
 	root = middlware.GunZipMiddlware(root)
 	root = middlware.ResponseHashMiddlware(root, key)
 
-	if err := http.ListenAndServe(addr, root); err != nil {
-		panic(err)
+	srv := &http.Server{Addr: addr, Handler: root}
+
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	sg.Infow("server started", "address", addr)
+
+	select {
+	case err := <-serveErr:
+		if !errors.Is(err, http.ErrServerClosed) {
+			sg.Errorw("server failed", "error", err)
+			os.Exit(1)
+		}
+	case <-signalCtx.Done():
+		sg.Infow("shutdown signal received")
+	}
+
+	// возвращаем сигналам штатную обработку: повторный SIGTERM завершает процесс сразу
+	stopSignals()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		sg.Errorw("graceful shutdown failed", "error", err)
+	}
+
+	// финальный сброс: для файлового хранилища это последние метрики за интервал
+	if err := storage.Close(); err != nil {
+		sg.Errorw("failed to close storage", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -183,66 +189,6 @@ func applyMigrations(dsn string) error {
 
 	if err := goose.Up(db, "."); err != nil {
 		return fmt.Errorf("goose up: %w", err)
-	}
-
-	return nil
-}
-
-// func toMetrics(rows []models.Metrics) []models.Metrics {
-// 	result := make([]models.Metrics, 0, len(rows))
-// 	for _, row := range rows {
-// 		metric := models.Metrics{
-// 			ID:    row.Name,
-// 			MType: row.Type,
-// 		}
-
-// 		switch row.Type {
-// 		case models.Gauge:
-// 			value := row.Value
-// 			if value == nil {
-// 				continue
-// 			}
-// 			metric.Value = value
-// 		case models.Counter:
-// 			delta := row.Delta
-// 			if delta == nil {
-// 				continue
-// 			}
-// 			metric.Delta = delta
-// 		default:
-// 			continue
-// 		}
-
-// 		result = append(result, metric)
-// 	}
-
-// 	return result
-// }
-
-func saveMetrics(ctx context.Context, file *os.File, store models.Storage) error {
-	if store == nil {
-		return fmt.Errorf("store is nil")
-	}
-	mstore, err := store.GetAll(ctx)
-	if err != nil {
-		return fmt.Errorf("get all metrics: %w", err)
-	}
-	data, err := json.Marshal(mstore)
-	if err != nil {
-		return fmt.Errorf("marshal metrics: %w", err)
-	}
-
-	if err := file.Truncate(0); err != nil {
-		return fmt.Errorf("truncate storage file: %w", err)
-	}
-	if _, err := file.Seek(0, 0); err != nil {
-		return fmt.Errorf("seek storage file: %w", err)
-	}
-	if _, err := file.Write(data); err != nil {
-		return fmt.Errorf("write storage file: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync storage file: %w", err)
 	}
 
 	return nil
