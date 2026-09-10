@@ -2,10 +2,10 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
@@ -20,19 +20,23 @@ import (
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/shared"
 	"github.com/caarlos0/env/v11"
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
 )
 
 type Agent struct {
-	mu        sync.RWMutex
 	storage   models.Storage
-	pollCount int64
 	server    string
+	key       string
+	rateLimit int
 }
 
-func NewAgent(serverURL string) *Agent {
+func NewAgent(serverURL, key string, rateLimit int) *Agent {
 	return &Agent{
-		server:  serverURL,
-		storage: models.NewMemStorage(),
+		server:    serverURL,
+		key:       key,
+		rateLimit: rateLimit,
+		storage:   models.NewMemStorage(),
 	}
 }
 
@@ -52,11 +56,7 @@ func (a *Agent) updateCounter(name string, delta int64) {
 	})
 }
 
-func (a *Agent) collectMetrics() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	a.pollCount++
+func (a *Agent) collectRuntimeMetrics() {
 	m := new(runtime.MemStats)
 	runtime.ReadMemStats(m)
 
@@ -97,55 +97,54 @@ func (a *Agent) collectMetrics() {
 
 	a.updateCounter("PollCount", 1)
 
-	slog.Info("Collect metrics done")
+	slog.Info("Collect runtime metrics done")
 }
 
-func (a *Agent) reportMetrics(client *http.Client) {
-	metrics, err := a.storage.GetAll(context.Background())
+func (a *Agent) collectSystemMetrics() {
+	vm, err := mem.VirtualMemory()
 	if err != nil {
-		slog.Error("failed to get all metrics", "error", err)
-		return
+		slog.Error("failed to read virtual memory", "error", err)
+	} else {
+		a.updateGauge("TotalMemory", float64(vm.Total))
+		a.updateGauge("FreeMemory", float64(vm.Free))
 	}
 
-	if len(metrics) == 0 {
-		return
-	}
-
-	body, err := json.Marshal(metrics)
+	utilizations, err := cpu.Percent(0, true)
 	if err != nil {
-		slog.Error("failed to marshal metrics", "error", err)
+		slog.Error("failed to read cpu utilization", "error", err)
 		return
 	}
 
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	if _, err := gz.Write(body); err != nil {
-		slog.Error("failed to compress metrics", "error", err)
-		return
+	for i, u := range utilizations {
+		a.updateGauge(fmt.Sprintf("CPUutilization%d", i+1), u)
 	}
-	if err := gz.Close(); err != nil {
-		slog.Error("failed to finish compression", "error", err)
+}
+
+func (a *Agent) sendMetric(ctx context.Context, client *http.Client, m models.Metrics) {
+	body, err := json.Marshal(m)
+	if err != nil {
+		slog.Error("failed to marshal metric", "metric", m.ID, "error", err)
 		return
 	}
 
-	updateURL, err := url.JoinPath(a.server, "updates/")
+	updateURL, err := url.JoinPath(a.server, "update/")
 	if err != nil {
 		slog.Error("failed to build url", "error", err)
 		return
 	}
 
-	payload := buf.Bytes()
-
 	var resp *http.Response
-	err = shared.DoWithRetries(context.Background(), shared.RetryDelays,
+	err = shared.DoWithRetries(ctx, shared.RetryDelays,
 		func(err error) bool { return err != nil },
 		func(ctx context.Context) error {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bytes.NewReader(payload))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bytes.NewReader(body))
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Content-Encoding", "gzip")
+			if a.key != "" {
+				req.Header.Set(shared.HashHeader, shared.CalcHash(body, a.key))
+			}
 
 			r, err := client.Do(req)
 			if err != nil {
@@ -159,32 +158,66 @@ func (a *Agent) reportMetrics(client *http.Client) {
 			return nil
 		})
 	if err != nil {
-		slog.Error("failed to send metrics after retries", "error", err)
+		slog.Error("failed to send metric after retries", "metric", m.ID, "error", err)
 		return
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		slog.Error("server returned bad status", "status", resp.Status)
+		slog.Error("server returned bad status", "metric", m.ID, "status", resp.Status)
 		return
 	}
 
-	for _, m := range metrics {
-		if m.MType == models.Counter && m.Delta != nil {
-			a.updateCounter(m.ID, -*m.Delta)
-		}
+	if m.MType == models.Counter && m.Delta != nil {
+		a.updateCounter(m.ID, -*m.Delta)
 	}
+}
+
+func (a *Agent) reportMetrics(ctx context.Context, client *http.Client) {
+	metrics, err := a.storage.GetAll(ctx)
+	if err != nil {
+		slog.Error("failed to get all metrics", "error", err)
+		return
+	}
+
+	if len(metrics) == 0 {
+		return
+	}
+
+	jobs := make(chan models.Metrics, len(metrics))
+
+	var wg sync.WaitGroup
+	wg.Add(a.rateLimit)
+	for range a.rateLimit {
+		go func() {
+			defer wg.Done()
+			for m := range jobs {
+				a.sendMetric(ctx, client, m)
+			}
+		}()
+	}
+
+	for _, m := range metrics {
+		jobs <- m
+	}
+	close(jobs)
+
+	wg.Wait()
 }
 
 var (
 	address        *string
 	reportInterval *int
 	pollInterval   *int
+	keyFlag        *string
+	rateLimit      *int
 )
 
 func init() {
 	address = flag.String("a", "http://localhost:8080", "server address")
 	reportInterval = flag.Int("r", 10, "report interval in seconds")
 	pollInterval = flag.Int("p", 2, "poll interval in seconds")
+	keyFlag = flag.String("k", "", "secret key for data signing")
+	rateLimit = flag.Int("l", 1, "max number of concurrent requests to the server")
 }
 
 func main() {
@@ -197,38 +230,56 @@ func main() {
 	}
 
 	addr := agent.NormalizeAddress(shared.ValueOr(cfg.Address, *address))
+	key := shared.ValueOr(cfg.Key, *keyFlag)
 	pIntervalSec := shared.ValueOr(cfg.PollInterval, *pollInterval)
 	rIntervalSec := shared.ValueOr(cfg.ReportInterval, *reportInterval)
+	limit := shared.ValueOr(cfg.RateLimit, *rateLimit)
 
 	if pIntervalSec <= 0 || rIntervalSec <= 0 {
 		slog.Error("intervals must be positive")
 		os.Exit(1)
 	}
 
+	if limit <= 0 {
+		slog.Error("rate limit must be positive")
+		os.Exit(1)
+	}
+
 	pInterval := time.Duration(pIntervalSec) * time.Second
 	rInterval := time.Duration(rIntervalSec) * time.Second
 
-	a := NewAgent(addr)
-
-	collectTicker := time.NewTicker(pInterval)
-	defer collectTicker.Stop()
-
-	sendTicker := time.NewTicker(rInterval)
-	defer sendTicker.Stop()
+	a := NewAgent(addr, key, limit)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 	}
 
+	ctx := context.Background()
+
+	collectTicker := time.NewTicker(pInterval)
+	defer collectTicker.Stop()
+
+	systemTicker := time.NewTicker(pInterval)
+	defer systemTicker.Stop()
+
+	sendTicker := time.NewTicker(rInterval)
+	defer sendTicker.Stop()
+
 	go func() {
 		for range collectTicker.C {
-			a.collectMetrics()
+			a.collectRuntimeMetrics()
+		}
+	}()
+
+	go func() {
+		for range systemTicker.C {
+			a.collectSystemMetrics()
 		}
 	}()
 
 	go func() {
 		for range sendTicker.C {
-			a.reportMetrics(client)
+			a.reportMetrics(ctx, client)
 		}
 	}()
 

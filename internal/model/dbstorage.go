@@ -35,8 +35,6 @@ const getMetricSQL = `SELECT value, delta FROM metrics WHERE key = $1 AND type =
 
 const getAllMetricsSQL = `SELECT key, type, value, delta FROM metrics ORDER BY key`
 
-// isConnectionError считает повторимыми ошибки транспорта —
-// класс 08 (Connection Exception) PostgreSQL.
 func isConnectionError(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
