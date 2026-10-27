@@ -16,6 +16,7 @@ type Config struct {
 	AuditFile         *string `env:"AUDIT_FILE"`
 	AuditURL          *string `env:"AUDIT_URL"`
 	CryptoKey         *string `env:"CRYPTO_KEY"`
+	Config            *string `env:"CONFIG"`
 }
 
 // NewConfig создаёт пустой конфиг для последующего разбора переменных окружения.
