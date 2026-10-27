@@ -1,5 +1,8 @@
 package server
 
+// Config — конфигурация сервера, заполняемая из переменных окружения.
+// Поля-указатели отличают «переменная не задана» от пустого значения:
+// для незаданных полей используются значения флагов командной строки.
 type Config struct {
 	Address           *string `env:"ADDRESS"`
 	StoreInterval     *int    `env:"STORE_INTERVAL"`
@@ -12,6 +15,7 @@ type Config struct {
 	AuditURL          *string `env:"AUDIT_URL"`
 }
 
+// NewConfig создаёт пустой конфиг для последующего разбора переменных окружения.
 func NewConfig() *Config {
 	return &Config{}
 }
