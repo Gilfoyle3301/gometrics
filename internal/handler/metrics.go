@@ -1,3 +1,5 @@
+// Package handler содержит HTTP-хендлеры сервера метрик: приём обновлений,
+// выдачу значений, главную страницу со сводкой и проверку доступности БД.
 package handler
 
 import (
@@ -248,7 +250,7 @@ func (h *Handler) GetMetric(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
 		if h.logger != nil {
-			h.logger.Error("failed to encode response: %v", zap.Error(err))
+			h.logger.Errorw("failed to encode response", "error", err)
 		}
 	}
 }

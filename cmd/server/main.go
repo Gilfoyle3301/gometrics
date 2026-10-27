@@ -44,6 +44,10 @@ var (
 const shutdownTimeout = 5 * time.Second
 
 func main() {
+	run()
+}
+
+func run() {
 	flag.Parse()
 
 	cfg := server.NewConfig()

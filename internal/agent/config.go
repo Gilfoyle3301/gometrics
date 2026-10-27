@@ -1,3 +1,4 @@
+// Package agent хранит конфигурацию агента сбора метрик.
 package agent
 
 import "strings"

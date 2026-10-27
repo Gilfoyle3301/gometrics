@@ -1,3 +1,4 @@
+// Package templates содержит встроенные HTML-шаблоны страниц сервера.
 package templates
 
 import "embed"
