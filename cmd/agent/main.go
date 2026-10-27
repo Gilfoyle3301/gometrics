@@ -221,6 +221,10 @@ func init() {
 }
 
 func main() {
+	run()
+}
+
+func run() {
 	flag.Parse()
 
 	cfg := agent.NewConfig()
