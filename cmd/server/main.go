@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Gilfoyle3301/gometrics/internal/audit"
 	"github.com/Gilfoyle3301/gometrics/internal/config/server"
 	"github.com/Gilfoyle3301/gometrics/internal/handler"
 	"github.com/Gilfoyle3301/gometrics/internal/middlware"
@@ -35,6 +36,8 @@ var (
 	dataBaseDSN     = flag.String("d", "", "database DSN")
 	keyFlag         = flag.String("k", "", "secret key for data signing")
 	strictSignature = flag.Bool("strict-signature", false, "reject requests without a valid signature")
+	auditFile       = flag.String("audit-file", "", "path to audit log file")
+	auditURL        = flag.String("audit-url", "", "URL to send audit events")
 )
 
 // shutdownTimeout — сколько ждём завершения активных запросов после сигнала.
@@ -57,6 +60,8 @@ func main() {
 	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
 	key := shared.ValueOr(cfg.Key, *keyFlag)
 	requireSignature := shared.ValueOr(cfg.SignatureRequired, *strictSignature)
+	auditFilePath := shared.ValueOr(cfg.AuditFile, *auditFile)
+	auditURLValue := shared.ValueOr(cfg.AuditURL, *auditURL)
 
 	ctx := context.Background()
 
@@ -112,7 +117,26 @@ func main() {
 		storage = models.NewMemStorage()
 	}
 
-	handle := handler.New(storage, sg)
+	var observers []audit.Observer
+	if auditFilePath != "" {
+		fileObserver, err := audit.NewFileObserver(auditFilePath)
+		if err != nil {
+			sg.Errorw("failed to init audit file observer", "error", err)
+			os.Exit(1)
+		}
+		observers = append(observers, fileObserver)
+	}
+	if auditURLValue != "" {
+		observers = append(observers, audit.NewURLObserver(auditURLValue))
+	}
+
+	var notifier *audit.Notifier
+	if len(observers) > 0 {
+		notifier = audit.NewNotifier(sg, observers...)
+		defer notifier.Close()
+	}
+
+	handle := handler.New(storage, sg).WithAudit(notifier)
 
 	updateParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)
 	updateJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)

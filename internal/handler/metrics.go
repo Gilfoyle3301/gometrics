@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
 
+	"github.com/Gilfoyle3301/gometrics/internal/audit"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/templates"
 	"github.com/gorilla/mux"
@@ -30,6 +32,7 @@ type PageData struct {
 type Handler struct {
 	storage models.Storage
 	logger  *zap.SugaredLogger
+	audit   *audit.Notifier
 }
 
 func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
@@ -37,6 +40,19 @@ func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
 		storage: s,
 		logger:  logger,
 	}
+}
+
+func (h *Handler) WithAudit(n *audit.Notifier) *Handler {
+	h.audit = n
+	return h
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +98,8 @@ func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.audit.Notify([]string{metricName}, clientIP(r))
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -108,6 +126,8 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.audit.Notify([]string{metric.ID}, clientIP(r))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -142,6 +162,12 @@ func (h *Handler) UpdateMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	names := make([]string, 0, len(batch))
+	for i := range batch {
+		names = append(names, batch[i].ID)
+	}
+	h.audit.Notify(names, clientIP(r))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
