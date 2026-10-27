@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -29,6 +30,7 @@ type Agent struct {
 	server    string
 	key       string
 	rateLimit int
+	publicKey *rsa.PublicKey
 }
 
 func NewAgent(serverURL, key string, rateLimit int) *Agent {
@@ -38,6 +40,13 @@ func NewAgent(serverURL, key string, rateLimit int) *Agent {
 		rateLimit: rateLimit,
 		storage:   models.NewMemStorage(),
 	}
+}
+
+// WithPublicKey подключает публичный RSA-ключ: тела запросов к серверу
+// шифруются, а подпись HashSHA256 считается от шифртекста.
+func (a *Agent) WithPublicKey(pub *rsa.PublicKey) *Agent {
+	a.publicKey = pub
+	return a
 }
 
 func (a *Agent) updateGauge(name string, value float64) {
@@ -127,6 +136,15 @@ func (a *Agent) sendMetric(ctx context.Context, client *http.Client, m models.Me
 		return
 	}
 
+	payload := body
+	if a.publicKey != nil {
+		payload, err = shared.EncryptRSA(a.publicKey, body)
+		if err != nil {
+			slog.Error("failed to encrypt metric", "metric", m.ID, "error", err)
+			return
+		}
+	}
+
 	updateURL, err := url.JoinPath(a.server, "update/")
 	if err != nil {
 		slog.Error("failed to build url", "error", err)
@@ -137,13 +155,13 @@ func (a *Agent) sendMetric(ctx context.Context, client *http.Client, m models.Me
 	err = shared.DoWithRetries(ctx, shared.RetryDelays,
 		func(err error) bool { return err != nil },
 		func(ctx context.Context) error {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bytes.NewReader(body))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, updateURL, bytes.NewReader(payload))
 			if err != nil {
 				return err
 			}
 			req.Header.Set("Content-Type", "application/json")
 			if a.key != "" {
-				req.Header.Set(shared.HashHeader, shared.CalcHash(body, a.key))
+				req.Header.Set(shared.HashHeader, shared.CalcHash(payload, a.key))
 			}
 
 			r, err := client.Do(req)
@@ -210,6 +228,7 @@ var (
 	pollInterval   *int
 	keyFlag        *string
 	rateLimit      *int
+	cryptoKey      *string
 )
 
 var (
@@ -224,6 +243,7 @@ func init() {
 	pollInterval = flag.Int("p", 2, "poll interval in seconds")
 	keyFlag = flag.String("k", "", "secret key for data signing")
 	rateLimit = flag.Int("l", 1, "max number of concurrent requests to the server")
+	cryptoKey = flag.String("crypto-key", "", "path to RSA public key PEM for encrypting requests")
 }
 
 func main() {
@@ -246,6 +266,7 @@ func run() {
 	pIntervalSec := shared.ValueOr(cfg.PollInterval, *pollInterval)
 	rIntervalSec := shared.ValueOr(cfg.ReportInterval, *reportInterval)
 	limit := shared.ValueOr(cfg.RateLimit, *rateLimit)
+	cryptoKeyPath := shared.ValueOr(cfg.CryptoKey, *cryptoKey)
 
 	if pIntervalSec <= 0 || rIntervalSec <= 0 {
 		slog.Error("intervals must be positive")
@@ -260,7 +281,17 @@ func run() {
 	pInterval := time.Duration(pIntervalSec) * time.Second
 	rInterval := time.Duration(rIntervalSec) * time.Second
 
-	a := NewAgent(addr, key, limit)
+	var pubKey *rsa.PublicKey
+	if cryptoKeyPath != "" {
+		var err error
+		pubKey, err = shared.LoadPublicKey(cryptoKeyPath)
+		if err != nil {
+			slog.Error("failed to load crypto key", "error", err)
+			os.Exit(1)
+		}
+	}
+
+	a := NewAgent(addr, key, limit).WithPublicKey(pubKey)
 
 	client := &http.Client{
 		Timeout: 10 * time.Second,

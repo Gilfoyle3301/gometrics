@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"database/sql"
 	"errors"
 	"flag"
@@ -38,6 +39,7 @@ var (
 	strictSignature = flag.Bool("strict-signature", false, "reject requests without a valid signature")
 	auditFile       = flag.String("audit-file", "", "path to audit log file")
 	auditURL        = flag.String("audit-url", "", "URL to send audit events")
+	cryptoKey       = flag.String("crypto-key", "", "path to RSA private key PEM for decrypting request bodies")
 )
 
 var (
@@ -74,6 +76,7 @@ func run() {
 	requireSignature := shared.ValueOr(cfg.SignatureRequired, *strictSignature)
 	auditFilePath := shared.ValueOr(cfg.AuditFile, *auditFile)
 	auditURLValue := shared.ValueOr(cfg.AuditURL, *auditURL)
+	cryptoKeyPath := shared.ValueOr(cfg.CryptoKey, *cryptoKey)
 
 	ctx := context.Background()
 
@@ -83,6 +86,15 @@ func run() {
 	}
 	defer logger.Sync()
 	sg := logger.Sugar()
+
+	var privKey *rsa.PrivateKey
+	if cryptoKeyPath != "" {
+		privKey, err = shared.LoadPrivateKey(cryptoKeyPath)
+		if err != nil {
+			sg.Errorw("failed to load crypto key", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	if saveIntervalSec < 0 {
 		slog.Error("store interval must not be negative")
@@ -168,6 +180,7 @@ func run() {
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 
 	var root http.Handler = r
+	root = middlware.DecryptMiddlware(root, privKey)
 	root = middlware.RequestHashMiddlware(root, key, requireSignature)
 	root = middlware.GunZipMiddlware(root)
 	root = middlware.ResponseHashMiddlware(root, key)
