@@ -40,6 +40,7 @@ var (
 	auditFile       = flag.String("audit-file", "", "path to audit log file")
 	auditURL        = flag.String("audit-url", "", "URL to send audit events")
 	cryptoKey       = flag.String("crypto-key", "", "path to RSA private key PEM for decrypting request bodies")
+	configFile      = flag.String("c", "", "path to JSON configuration file")
 )
 
 var (
@@ -58,6 +59,7 @@ func main() {
 func run() {
 	fmt.Print(shared.FormatBuildInfo(buildVersion, buildDate, buildCommit))
 
+	flag.StringVar(configFile, "config", "", "path to JSON configuration file (alias of -c)")
 	flag.Parse()
 
 	cfg := server.NewConfig()
@@ -67,16 +69,34 @@ func run() {
 		os.Exit(1)
 	}
 
-	addr := shared.ValueOr(cfg.Address, *address)
-	saveIntervalSec := shared.ValueOr(cfg.StoreInterval, *storeInterval)
-	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
-	needRestore := shared.ValueOr(cfg.Restore, *restore)
-	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
-	key := shared.ValueOr(cfg.Key, *keyFlag)
-	requireSignature := shared.ValueOr(cfg.SignatureRequired, *strictSignature)
-	auditFilePath := shared.ValueOr(cfg.AuditFile, *auditFile)
-	auditURLValue := shared.ValueOr(cfg.AuditURL, *auditURL)
-	cryptoKeyPath := shared.ValueOr(cfg.CryptoKey, *cryptoKey)
+	explicit := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		explicit[f.Name] = true
+	})
+
+	configPath := shared.Resolve(explicit["c"] || explicit["config"], *configFile, cfg.Config, nil)
+	fileCfg, err := server.LoadFileConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load config file", "error", err)
+		os.Exit(1)
+	}
+
+	fileStoreInterval, err := shared.IntervalPtrSeconds(fileCfg.StoreInterval)
+	if err != nil {
+		slog.Error("invalid store_interval in config file", "error", err)
+		os.Exit(1)
+	}
+
+	addr := shared.Resolve(explicit["a"], *address, cfg.Address, fileCfg.Address)
+	saveIntervalSec := shared.Resolve(explicit["i"], *storeInterval, cfg.StoreInterval, fileStoreInterval)
+	storagePath := shared.Resolve(explicit["s"], *fileStoragePath, cfg.FileStoragePath, fileCfg.StoreFile)
+	needRestore := shared.Resolve(explicit["r"], *restore, cfg.Restore, fileCfg.Restore)
+	dataBaseDSN := shared.Resolve(explicit["d"], *dataBaseDSN, cfg.DatabaseDSN, fileCfg.DatabaseDSN)
+	key := shared.Resolve(explicit["k"], *keyFlag, cfg.Key, fileCfg.Key)
+	requireSignature := shared.Resolve(explicit["strict-signature"], *strictSignature, cfg.SignatureRequired, fileCfg.SignatureRequired)
+	auditFilePath := shared.Resolve(explicit["audit-file"], *auditFile, cfg.AuditFile, fileCfg.AuditFile)
+	auditURLValue := shared.Resolve(explicit["audit-url"], *auditURL, cfg.AuditURL, fileCfg.AuditURL)
+	cryptoKeyPath := shared.Resolve(explicit["crypto-key"], *cryptoKey, cfg.CryptoKey, fileCfg.CryptoKey)
 
 	ctx := context.Background()
 

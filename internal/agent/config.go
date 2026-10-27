@@ -13,6 +13,7 @@ type Config struct {
 	Key            *string `env:"KEY"`
 	RateLimit      *int    `env:"RATE_LIMIT"`
 	CryptoKey      *string `env:"CRYPTO_KEY"`
+	Config         *string `env:"CONFIG"`
 }
 
 // NewConfig создаёт пустой конфиг агента для разбора переменных окружения.
