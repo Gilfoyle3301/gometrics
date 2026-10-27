@@ -7,22 +7,29 @@ import (
 	"go.uber.org/zap"
 )
 
+// Event — событие аудита: unix-время, имена полученных метрик
+// и IP-адрес входящего запроса.
 type Event struct {
 	Timestamp int64    `json:"ts"`
 	Metrics   []string `json:"metrics"`
 	IPAddress string   `json:"ip_address"`
 }
 
+// Observer — приёмник событий аудита (файл, удалённый URL и т.п.).
 type Observer interface {
 	Update(Event) error
 	Close() error
 }
 
+// Notifier — субъект паттерна «Наблюдатель»: формирует события аудита
+// и рассылает их всем подписанным приёмникам.
 type Notifier struct {
 	observers []Observer
 	logger    *zap.SugaredLogger
 }
 
+// NewNotifier создаёт нотификатор с исходным набором приёмников.
+// logger может быть nil.
 func NewNotifier(logger *zap.SugaredLogger, observers ...Observer) *Notifier {
 	return &Notifier{
 		observers: observers,
@@ -30,10 +37,14 @@ func NewNotifier(logger *zap.SugaredLogger, observers ...Observer) *Notifier {
 	}
 }
 
+// Subscribe добавляет приёмник событий аудита.
 func (n *Notifier) Subscribe(o Observer) {
 	n.observers = append(n.observers, o)
 }
 
+// Notify формирует событие из имён метрик и IP-адреса клиента и отправляет
+// его во все приёмники. Вызов на nil-нотификаторе безопасен (аудит отключён);
+// ошибки приёмников логируются и не влияют на обработку запроса.
 func (n *Notifier) Notify(metricNames []string, ipAddress string) {
 	if n == nil {
 		return
@@ -52,6 +63,8 @@ func (n *Notifier) Notify(metricNames []string, ipAddress string) {
 	}
 }
 
+// Close закрывает все приёмники и возвращает объединённую ошибку.
+// Вызов на nil-нотификаторе безопасен.
 func (n *Notifier) Close() error {
 	if n == nil {
 		return nil
