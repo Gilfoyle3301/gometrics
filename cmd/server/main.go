@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"database/sql"
 	"errors"
 	"flag"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Gilfoyle3301/gometrics/internal/audit"
 	"github.com/Gilfoyle3301/gometrics/internal/config/server"
 	"github.com/Gilfoyle3301/gometrics/internal/handler"
 	"github.com/Gilfoyle3301/gometrics/internal/middlware"
@@ -35,12 +37,29 @@ var (
 	dataBaseDSN     = flag.String("d", "", "database DSN")
 	keyFlag         = flag.String("k", "", "secret key for data signing")
 	strictSignature = flag.Bool("strict-signature", false, "reject requests without a valid signature")
+	auditFile       = flag.String("audit-file", "", "path to audit log file")
+	auditURL        = flag.String("audit-url", "", "URL to send audit events")
+	cryptoKey       = flag.String("crypto-key", "", "path to RSA private key PEM for decrypting request bodies")
+	configFile      = flag.String("c", "", "path to JSON configuration file")
+)
+
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
 )
 
 // shutdownTimeout — сколько ждём завершения активных запросов после сигнала.
 const shutdownTimeout = 5 * time.Second
 
 func main() {
+	run()
+}
+
+func run() {
+	fmt.Print(shared.FormatBuildInfo(buildVersion, buildDate, buildCommit))
+
+	flag.StringVar(configFile, "config", "", "path to JSON configuration file (alias of -c)")
 	flag.Parse()
 
 	cfg := server.NewConfig()
@@ -50,13 +69,34 @@ func main() {
 		os.Exit(1)
 	}
 
-	addr := shared.ValueOr(cfg.Address, *address)
-	saveIntervalSec := shared.ValueOr(cfg.StoreInterval, *storeInterval)
-	storagePath := shared.ValueOr(cfg.FileStoragePath, *fileStoragePath)
-	needRestore := shared.ValueOr(cfg.Restore, *restore)
-	dataBaseDSN := shared.ValueOr(cfg.DatabaseDSN, *dataBaseDSN)
-	key := shared.ValueOr(cfg.Key, *keyFlag)
-	requireSignature := shared.ValueOr(cfg.SignatureRequired, *strictSignature)
+	explicit := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		explicit[f.Name] = true
+	})
+
+	configPath := shared.Resolve(explicit["c"] || explicit["config"], *configFile, cfg.Config, nil)
+	fileCfg, err := server.LoadFileConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load config file", "error", err)
+		os.Exit(1)
+	}
+
+	fileStoreInterval, err := shared.IntervalPtrSeconds(fileCfg.StoreInterval)
+	if err != nil {
+		slog.Error("invalid store_interval in config file", "error", err)
+		os.Exit(1)
+	}
+
+	addr := shared.Resolve(explicit["a"], *address, cfg.Address, fileCfg.Address)
+	saveIntervalSec := shared.Resolve(explicit["i"], *storeInterval, cfg.StoreInterval, fileStoreInterval)
+	storagePath := shared.Resolve(explicit["s"], *fileStoragePath, cfg.FileStoragePath, fileCfg.StoreFile)
+	needRestore := shared.Resolve(explicit["r"], *restore, cfg.Restore, fileCfg.Restore)
+	dataBaseDSN := shared.Resolve(explicit["d"], *dataBaseDSN, cfg.DatabaseDSN, fileCfg.DatabaseDSN)
+	key := shared.Resolve(explicit["k"], *keyFlag, cfg.Key, fileCfg.Key)
+	requireSignature := shared.Resolve(explicit["strict-signature"], *strictSignature, cfg.SignatureRequired, fileCfg.SignatureRequired)
+	auditFilePath := shared.Resolve(explicit["audit-file"], *auditFile, cfg.AuditFile, fileCfg.AuditFile)
+	auditURLValue := shared.Resolve(explicit["audit-url"], *auditURL, cfg.AuditURL, fileCfg.AuditURL)
+	cryptoKeyPath := shared.Resolve(explicit["crypto-key"], *cryptoKey, cfg.CryptoKey, fileCfg.CryptoKey)
 
 	ctx := context.Background()
 
@@ -66,6 +106,15 @@ func main() {
 	}
 	defer logger.Sync()
 	sg := logger.Sugar()
+
+	var privKey *rsa.PrivateKey
+	if cryptoKeyPath != "" {
+		privKey, err = shared.LoadPrivateKey(cryptoKeyPath)
+		if err != nil {
+			sg.Errorw("failed to load crypto key", "error", err)
+			os.Exit(1)
+		}
+	}
 
 	if saveIntervalSec < 0 {
 		slog.Error("store interval must not be negative")
@@ -112,7 +161,26 @@ func main() {
 		storage = models.NewMemStorage()
 	}
 
-	handle := handler.New(storage, sg)
+	var observers []audit.Observer
+	if auditFilePath != "" {
+		fileObserver, err := audit.NewFileObserver(auditFilePath)
+		if err != nil {
+			sg.Errorw("failed to init audit file observer", "error", err)
+			os.Exit(1)
+		}
+		observers = append(observers, fileObserver)
+	}
+	if auditURLValue != "" {
+		observers = append(observers, audit.NewURLObserver(auditURLValue))
+	}
+
+	var notifier *audit.Notifier
+	if len(observers) > 0 {
+		notifier = audit.NewNotifier(sg, observers...)
+		defer notifier.Close()
+	}
+
+	handle := handler.New(storage, sg).WithAudit(notifier)
 
 	updateParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)
 	updateJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)
@@ -132,6 +200,7 @@ func main() {
 	r.Handle("/", middlware.LoggerMiddlware(http.HandlerFunc(handle.MainPage), sg)).Methods("GET")
 
 	var root http.Handler = r
+	root = middlware.DecryptMiddlware(root, privKey)
 	root = middlware.RequestHashMiddlware(root, key, requireSignature)
 	root = middlware.GunZipMiddlware(root)
 	root = middlware.ResponseHashMiddlware(root, key)
