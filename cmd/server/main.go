@@ -40,6 +40,12 @@ var (
 	auditURL        = flag.String("audit-url", "", "URL to send audit events")
 )
 
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 // shutdownTimeout — сколько ждём завершения активных запросов после сигнала.
 const shutdownTimeout = 5 * time.Second
 
@@ -48,6 +54,8 @@ func main() {
 }
 
 func run() {
+	fmt.Print(shared.FormatBuildInfo(buildVersion, buildDate, buildCommit))
+
 	flag.Parse()
 
 	cfg := server.NewConfig()
