@@ -16,6 +16,8 @@ func (g gunWriter) Write(p []byte) (int, error) {
 	return g.Writer.Write(p)
 }
 
+// GunZipMiddlware сжимает ответ gzip, если клиент объявил поддержку
+// (Accept-Encoding содержит gzip).
 func GunZipMiddlware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
