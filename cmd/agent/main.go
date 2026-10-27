@@ -212,6 +212,12 @@ var (
 	rateLimit      *int
 )
 
+var (
+	buildVersion string
+	buildDate    string
+	buildCommit  string
+)
+
 func init() {
 	address = flag.String("a", "http://localhost:8080", "server address")
 	reportInterval = flag.Int("r", 10, "report interval in seconds")
@@ -225,6 +231,8 @@ func main() {
 }
 
 func run() {
+	fmt.Print(shared.FormatBuildInfo(buildVersion, buildDate, buildCommit))
+
 	flag.Parse()
 
 	cfg := agent.NewConfig()
