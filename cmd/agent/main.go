@@ -229,6 +229,7 @@ var (
 	keyFlag        *string
 	rateLimit      *int
 	cryptoKey      *string
+	configFile     *string
 )
 
 var (
@@ -244,6 +245,8 @@ func init() {
 	keyFlag = flag.String("k", "", "secret key for data signing")
 	rateLimit = flag.Int("l", 1, "max number of concurrent requests to the server")
 	cryptoKey = flag.String("crypto-key", "", "path to RSA public key PEM for encrypting requests")
+	configFile = flag.String("c", "", "path to JSON configuration file")
+	flag.StringVar(configFile, "config", "", "path to JSON configuration file (alias of -c)")
 }
 
 func main() {
@@ -261,12 +264,36 @@ func run() {
 		os.Exit(1)
 	}
 
-	addr := agent.NormalizeAddress(shared.ValueOr(cfg.Address, *address))
-	key := shared.ValueOr(cfg.Key, *keyFlag)
-	pIntervalSec := shared.ValueOr(cfg.PollInterval, *pollInterval)
-	rIntervalSec := shared.ValueOr(cfg.ReportInterval, *reportInterval)
-	limit := shared.ValueOr(cfg.RateLimit, *rateLimit)
-	cryptoKeyPath := shared.ValueOr(cfg.CryptoKey, *cryptoKey)
+	explicit := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		explicit[f.Name] = true
+	})
+
+	configPath := shared.Resolve(explicit["c"] || explicit["config"], *configFile, cfg.Config, nil)
+	fileCfg, err := agent.LoadFileConfig(configPath)
+	if err != nil {
+		slog.Error("failed to load config file", "error", err)
+		os.Exit(1)
+	}
+
+	filePollInterval, err := shared.IntervalPtrSeconds(fileCfg.PollInterval)
+	if err != nil {
+		slog.Error("invalid poll_interval in config file", "error", err)
+		os.Exit(1)
+	}
+
+	fileReportInterval, err := shared.IntervalPtrSeconds(fileCfg.ReportInterval)
+	if err != nil {
+		slog.Error("invalid report_interval in config file", "error", err)
+		os.Exit(1)
+	}
+
+	addr := agent.NormalizeAddress(shared.Resolve(explicit["a"], *address, cfg.Address, fileCfg.Address))
+	key := shared.Resolve(explicit["k"], *keyFlag, cfg.Key, fileCfg.Key)
+	pIntervalSec := shared.Resolve(explicit["p"], *pollInterval, cfg.PollInterval, filePollInterval)
+	rIntervalSec := shared.Resolve(explicit["r"], *reportInterval, cfg.ReportInterval, fileReportInterval)
+	limit := shared.Resolve(explicit["l"], *rateLimit, cfg.RateLimit, fileCfg.RateLimit)
+	cryptoKeyPath := shared.Resolve(explicit["crypto-key"], *cryptoKey, cfg.CryptoKey, fileCfg.CryptoKey)
 
 	if pIntervalSec <= 0 || rIntervalSec <= 0 {
 		slog.Error("intervals must be positive")
@@ -283,7 +310,6 @@ func run() {
 
 	var pubKey *rsa.PublicKey
 	if cryptoKeyPath != "" {
-		var err error
 		pubKey, err = shared.LoadPublicKey(cryptoKeyPath)
 		if err != nil {
 			slog.Error("failed to load crypto key", "error", err)
