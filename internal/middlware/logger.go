@@ -8,6 +8,8 @@ import (
 	"go.uber.org/zap"
 )
 
+// LoggerMiddlware логирует каждый запрос: метод, путь, статус, размер ответа,
+// длительность и данные клиента.
 func LoggerMiddlware(h http.Handler, logger *zap.SugaredLogger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
