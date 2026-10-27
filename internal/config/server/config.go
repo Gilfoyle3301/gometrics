@@ -15,6 +15,7 @@ type Config struct {
 	SignatureRequired *bool   `env:"SIGNATURE_REQUIRED"`
 	AuditFile         *string `env:"AUDIT_FILE"`
 	AuditURL          *string `env:"AUDIT_URL"`
+	CryptoKey         *string `env:"CRYPTO_KEY"`
 }
 
 // NewConfig создаёт пустой конфиг для последующего разбора переменных окружения.
