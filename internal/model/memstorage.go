@@ -7,12 +7,14 @@ import (
 	"sync"
 )
 
+// MemStorage — потокобезопасное хранилище метрик в памяти процесса.
 type MemStorage struct {
 	mu       sync.RWMutex
 	gauges   map[string]float64
 	counters map[string]int64
 }
 
+// NewMemStorage создаёт пустое хранилище метрик в памяти.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -20,6 +22,8 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// Update валидирует и сохраняет одну метрику: gauge перезаписывается,
+// counter увеличивает накопленное значение на дельту.
 func (m *MemStorage) Update(ctx context.Context, metric *Metrics) error {
 	if err := ValidateMetric(metric); err != nil {
 		return err
@@ -42,6 +46,7 @@ func (m *MemStorage) applyLocked(metric *Metrics) {
 	}
 }
 
+// UpdateBatch валидирует и сохраняет все метрики пакета под одной блокировкой.
 func (m *MemStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
 	for i := range batch {
 		if err := ValidateMetric(&batch[i]); err != nil {
@@ -59,6 +64,7 @@ func (m *MemStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
 	return nil
 }
 
+// Get возвращает метрику по имени и типу или ошибку, если метрика не найдена.
 func (m *MemStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -89,6 +95,7 @@ func (m *MemStorage) Get(ctx context.Context, name string, mType string) (*Metri
 	}
 }
 
+// GetAll возвращает снимок всех сохранённых метрик обоих типов.
 func (m *MemStorage) GetAll(ctx context.Context) ([]Metrics, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -115,26 +122,31 @@ func (m *MemStorage) GetAll(ctx context.Context) ([]Metrics, error) {
 	return result, nil
 }
 
+// Ping для хранилища в памяти всегда успешен.
 func (m *MemStorage) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Close не выполняет действий: данные живут только в памяти.
 func (m *MemStorage) Close() error {
 	return nil
 }
 
+// SetGauge устанавливает значение gauge-метрики.
 func (m *MemStorage) SetGauge(name string, value float64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gauges[name] = value
 }
 
+// AddCounter увеличивает накопленное значение counter-метрики на дельту.
 func (m *MemStorage) AddCounter(name string, delta int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counters[name] += delta
 }
 
+// GetGauge возвращает текущее значение gauge-метрики и признак её наличия.
 func (m *MemStorage) GetGauge(name string) (float64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -142,6 +154,7 @@ func (m *MemStorage) GetGauge(name string) (float64, bool) {
 	return value, ok
 }
 
+// GetCounter возвращает накопленное значение counter-метрики и признак её наличия.
 func (m *MemStorage) GetCounter(name string) (int64, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -149,11 +162,15 @@ func (m *MemStorage) GetCounter(name string) (int64, bool) {
 	return value, ok
 }
 
+// GetAllMetrics возвращает все метрики без контекста и ошибки.
 func (m *MemStorage) GetAllMetrics() []Metrics {
 	metrics, _ := m.GetAll(context.Background())
 	return metrics
 }
 
+// Restore загружает метрики из JSON-снимка, заменяя текущее состояние:
+// counter'ы присваиваются, а не инкрементируются, чтобы повторная загрузка
+// файла не удваивала их значения.
 func (m *MemStorage) Restore(data []byte) error {
 	var metrics []Metrics
 

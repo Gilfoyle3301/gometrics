@@ -16,16 +16,15 @@ import (
 // запросную горутину.
 const eventQueueSize = 1024
 
-// Event — событие аудита: время запроса в Unix-секундах, имена обновлённых
-// метрик и IP-адрес клиента.
+// Event — событие аудита: unix-время, имена полученных метрик
+// и IP-адрес входящего запроса.
 type Event struct {
 	Timestamp int64    `json:"ts"`
 	Metrics   []string `json:"metrics"`
 	IPAddress string   `json:"ip_address"`
 }
 
-// Observer — приёмник событий аудита. Update обрабатывает одно событие,
-// Close освобождает ресурсы приёмника.
+// Observer — приёмник событий аудита (файл, удалённый URL и т.п.).
 type Observer interface {
 	Update(Event) error
 	Close() error
