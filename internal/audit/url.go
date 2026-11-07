@@ -4,15 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 )
 
+// URLObserver — приёмник аудита, отправляющий события POST-запросом
+// на удалённый URL.
 type URLObserver struct {
 	url    string
 	client *http.Client
 }
 
+// NewURLObserver создаёт приёмник для указанного URL с таймаутом запроса
+// 10 секунд.
 func NewURLObserver(url string) *URLObserver {
 	return &URLObserver{
 		url:    url,
@@ -20,6 +25,8 @@ func NewURLObserver(url string) *URLObserver {
 	}
 }
 
+// Update отправляет событие на URL в формате JSON; статус ответа 400
+// и выше считается ошибкой.
 func (o *URLObserver) Update(e Event) error {
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -30,7 +37,11 @@ func (o *URLObserver) Update(e Event) error {
 	if err != nil {
 		return fmt.Errorf("post audit event: %w", err)
 	}
-	defer resp.Body.Close()
+	// тело дочитывается, чтобы keep-alive соединение переиспользовалось
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		return fmt.Errorf("audit endpoint returned %s", resp.Status)
@@ -38,6 +49,7 @@ func (o *URLObserver) Update(e Event) error {
 	return nil
 }
 
+// Close освобождает простаивающие соединения HTTP-клиента.
 func (o *URLObserver) Close() error {
 	o.client.CloseIdleConnections()
 	return nil

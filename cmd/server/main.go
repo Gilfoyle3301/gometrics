@@ -136,7 +136,7 @@ func main() {
 		defer notifier.Close()
 	}
 
-	handle := handler.New(storage, sg).WithAudit(notifier)
+	handle := handler.New(storage, sg, handler.WithAudit(notifier))
 
 	updateParam := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetrics)), sg)
 	updateJSON := middlware.LoggerMiddlware(middlware.Decompress(http.HandlerFunc(handle.UpdateMetric)), sg)
