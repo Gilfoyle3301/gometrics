@@ -35,15 +35,26 @@ type Handler struct {
 	audit   *audit.Notifier
 }
 
-func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
-	return &Handler{
-		storage: s,
-		logger:  logger,
+// Option настраивает Handler при создании.
+type Option func(*Handler)
+
+// WithAudit возвращает опцию, подключающую нотификатор аудита.
+// nil отключает аудит: Notify на nil-Notifier безопасен.
+func WithAudit(n *audit.Notifier) Option {
+	return func(h *Handler) {
+		h.audit = n
 	}
 }
 
-func (h *Handler) WithAudit(n *audit.Notifier) *Handler {
-	h.audit = n
+// New создаёт хендлер метрик над указанным хранилищем. logger может быть nil.
+func New(s models.Storage, logger *zap.SugaredLogger, opts ...Option) *Handler {
+	h := &Handler{
+		storage: s,
+		logger:  logger,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
 	return h
 }
 

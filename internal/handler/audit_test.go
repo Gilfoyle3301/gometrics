@@ -25,18 +25,18 @@ func (o *recordingObserver) Update(e audit.Event) error {
 
 func (o *recordingObserver) Close() error { return nil }
 
-func newAuditHandler(t *testing.T) (*Handler, *recordingObserver) {
+func newAuditHandler(t *testing.T) (*Handler, *recordingObserver, *audit.Notifier) {
 	t.Helper()
 
 	observer := &recordingObserver{}
 	notifier := audit.NewNotifier(nil, observer)
 	t.Cleanup(func() { require.NoError(t, notifier.Close()) })
 
-	return New(models.NewMemStorage(), nil).WithAudit(notifier), observer
+	return New(models.NewMemStorage(), nil, WithAudit(notifier)), observer, notifier
 }
 
 func TestUpdateMetricsAuditEvent(t *testing.T) {
-	h, observer := newAuditHandler(t)
+	h, observer, notifier := newAuditHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/update/gauge/Alloc/123.45", nil)
 	req = mux.SetURLVars(req, map[string]string{"type": models.Gauge, "name": "Alloc", "value": "123.45"})
@@ -45,6 +45,7 @@ func TestUpdateMetricsAuditEvent(t *testing.T) {
 	h.UpdateMetrics(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, notifier.Close())
 	require.Len(t, observer.events, 1)
 	assert.Equal(t, []string{"Alloc"}, observer.events[0].Metrics)
 	assert.Equal(t, "192.0.2.1", observer.events[0].IPAddress)
@@ -52,7 +53,7 @@ func TestUpdateMetricsAuditEvent(t *testing.T) {
 }
 
 func TestUpdateMetricAuditEvent(t *testing.T) {
-	h, observer := newAuditHandler(t)
+	h, observer, notifier := newAuditHandler(t)
 
 	body := `{"id":"Alloc","type":"gauge","value":123.45}`
 	req := httptest.NewRequest(http.MethodPost, "/update", strings.NewReader(body))
@@ -62,13 +63,14 @@ func TestUpdateMetricAuditEvent(t *testing.T) {
 	h.UpdateMetric(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, notifier.Close())
 	require.Len(t, observer.events, 1)
 	assert.Equal(t, []string{"Alloc"}, observer.events[0].Metrics)
 	assert.Equal(t, "192.0.2.1", observer.events[0].IPAddress)
 }
 
 func TestUpdateMetricsBatchAuditEvent(t *testing.T) {
-	h, observer := newAuditHandler(t)
+	h, observer, notifier := newAuditHandler(t)
 
 	body := `[{"id":"Alloc","type":"gauge","value":1},{"id":"PollCount","type":"counter","delta":2}]`
 	req := httptest.NewRequest(http.MethodPost, "/updates", strings.NewReader(body))
@@ -78,12 +80,13 @@ func TestUpdateMetricsBatchAuditEvent(t *testing.T) {
 	h.UpdateMetricsBatch(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	require.NoError(t, notifier.Close())
 	require.Len(t, observer.events, 1)
 	assert.Equal(t, []string{"Alloc", "PollCount"}, observer.events[0].Metrics)
 }
 
 func TestNoAuditEventOnFailure(t *testing.T) {
-	h, observer := newAuditHandler(t)
+	h, observer, notifier := newAuditHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/update", strings.NewReader("not-json"))
 	req.Header.Set("Content-Type", "application/json")
@@ -92,6 +95,7 @@ func TestNoAuditEventOnFailure(t *testing.T) {
 	h.UpdateMetric(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+	require.NoError(t, notifier.Close())
 	assert.Empty(t, observer.events)
 }
 

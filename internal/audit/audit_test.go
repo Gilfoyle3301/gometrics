@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,7 @@ func TestNotifierDispatchesToAllObservers(t *testing.T) {
 
 	notifier := NewNotifier(nil, first, second)
 	notifier.Notify([]string{"Alloc", "Frees"}, "192.168.0.42")
+	require.NoError(t, notifier.Close())
 
 	require.Len(t, first.events, 1)
 	require.Len(t, second.events, 1)
@@ -126,15 +128,24 @@ func TestNotifierDispatchesToAllObservers(t *testing.T) {
 	assert.Positive(t, first.events[0].Timestamp)
 }
 
-func TestNotifierSubscribe(t *testing.T) {
-	notifier := NewNotifier(nil)
+func TestNotifierConcurrentNotify(t *testing.T) {
 	observer := &fakeObserver{}
+	notifier := NewNotifier(nil, observer)
 
-	notifier.Subscribe(observer)
-	notifier.Notify([]string{"Alloc"}, "10.0.0.1")
+	const sends = 100
+	var wg sync.WaitGroup
+	for i := 0; i < sends; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			notifier.Notify([]string{"Alloc"}, "10.0.0.1")
+		}()
+	}
 
-	require.Len(t, observer.events, 1)
-	assert.Equal(t, []string{"Alloc"}, observer.events[0].Metrics)
+	wg.Wait()
+	require.NoError(t, notifier.Close())
+
+	assert.Len(t, observer.events, sends)
 }
 
 func TestNilNotifier(t *testing.T) {
@@ -149,4 +160,5 @@ func TestNilNotifier(t *testing.T) {
 func TestNotifierCloseAggregatesErrors(t *testing.T) {
 	notifier := NewNotifier(nil, &fakeObserver{}, &fakeObserver{closeErr: errors.New("close failed")})
 	assert.Error(t, notifier.Close())
+	assert.NoError(t, notifier.Close())
 }
