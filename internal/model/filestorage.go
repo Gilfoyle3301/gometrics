@@ -134,12 +134,12 @@ func (fs *FileStorage) load() error {
 
 	// Restore, а не поштучный Update: счётчики восстанавливаются присваиванием
 	// сохранённого значения, иначе повторное чтение файла накрутило бы их дважды.
-	return fs.MemStorage.Restore(data)
+	return fs.Restore(data)
 }
 
 // saveLocked перезаписывает файл текущим снимком метрик. Вызывается под fileMu.
 func (fs *FileStorage) saveLocked() error {
-	metrics, err := fs.MemStorage.GetAll(context.Background())
+	metrics, err := fs.GetAll(context.Background())
 	if err != nil {
 		return fmt.Errorf("get all metrics: %w", err)
 	}

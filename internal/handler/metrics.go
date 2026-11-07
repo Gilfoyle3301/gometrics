@@ -1,13 +1,17 @@
+// Package handler содержит HTTP-хендлеры сервера метрик: приём обновлений,
+// выдачу значений, главную страницу со сводкой и проверку доступности БД.
 package handler
 
 import (
 	"encoding/json"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
 
+	"github.com/Gilfoyle3301/gometrics/internal/audit"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/templates"
 	"github.com/gorilla/mux"
@@ -20,6 +24,7 @@ var pageTemplate = template.Must(
 
 const expectedParts = 3
 
+// PageData — данные для шаблона главной HTML-страницы сервера.
 type PageData struct {
 	Metrics      []models.MetricRow
 	Total        int
@@ -27,18 +32,47 @@ type PageData struct {
 	CounterCount int
 }
 
+// Handler — HTTP-хендлеры метрик: приём обновлений, выдача значений
+// и главная страница со сводкой.
 type Handler struct {
 	storage models.Storage
 	logger  *zap.SugaredLogger
+	audit   *audit.Notifier
 }
 
-func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
-	return &Handler{
-		storage: s,
-		logger:  logger,
+// Option настраивает Handler при создании.
+type Option func(*Handler)
+
+// WithAudit возвращает опцию, подключающую нотификатор аудита.
+// nil отключает аудит: Notify на nil-Notifier безопасен.
+func WithAudit(n *audit.Notifier) Option {
+	return func(h *Handler) {
+		h.audit = n
 	}
 }
 
+// New создаёт хендлер метрик над указанным хранилищем. logger может быть nil.
+func New(s models.Storage, logger *zap.SugaredLogger, opts ...Option) *Handler {
+	h := &Handler{
+		storage: s,
+		logger:  logger,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// UpdateMetrics обрабатывает POST /update/{type}/{name}/{value}: сохраняет
+// метрику из параметров URL и при успехе отправляет событие аудита.
 func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 	parts := mux.Vars(r)
 	if len(parts) != expectedParts {
@@ -82,11 +116,15 @@ func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.audit.Notify([]string{metricName}, clientIP(r))
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
+// UpdateMetric обрабатывает POST /update: сохраняет метрику из JSON-тела
+// и при успехе отправляет событие аудита.
 func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
@@ -109,11 +147,15 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.audit.Notify([]string{metric.ID}, clientIP(r))
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
+// UpdateMetricsBatch обрабатывает POST /updates: сохраняет массив метрик
+// из JSON-тела и при успехе отправляет одно событие аудита со всеми именами.
 func (h *Handler) UpdateMetricsBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Invalid Content-Type", http.StatusBadRequest)
@@ -143,11 +185,19 @@ func (h *Handler) UpdateMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	names := make([]string, 0, len(batch))
+	for i := range batch {
+		names = append(names, batch[i].ID)
+	}
+	h.audit.Notify(names, clientIP(r))
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }
 
+// GetMetrics обрабатывает GET /value/{type}/{name} и возвращает значение
+// метрики текстом.
 func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	metricType := vars["type"]
@@ -184,6 +234,8 @@ func (h *Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(valueStr))
 }
 
+// GetMetric обрабатывает POST /value: возвращает метрику в формате JSON
+// по имени и типу из тела запроса.
 func (h *Handler) GetMetric(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Content-Type") != "application/json" {
 		http.Error(w, "Content-Type must be application/json", http.StatusBadRequest)
@@ -206,11 +258,12 @@ func (h *Handler) GetMetric(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
 		if h.logger != nil {
-			h.logger.Error("failed to encode response: %v", zap.Error(err))
+			h.logger.Errorw("failed to encode response", "error", err)
 		}
 	}
 }
 
+// MainPage обрабатывает GET / и рендерит HTML-таблицу всех сохранённых метрик.
 func (h *Handler) MainPage(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Get main page")
 
