@@ -2,6 +2,8 @@ package models
 
 import "fmt"
 
+// ValidateMetric проверяет, что тип метрики поддерживается и заполнено
+// соответствующее ему значение: Value для gauge, Delta для counter.
 func ValidateMetric(m *Metrics) error {
 	if m == nil {
 		return fmt.Errorf("metric is nil")
