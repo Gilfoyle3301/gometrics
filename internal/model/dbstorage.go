@@ -14,10 +14,13 @@ import (
 
 var _ Storage = (*DBStorage)(nil)
 
+// DBStorage — хранилище метрик в PostgreSQL на основе пула pgxpool.
+// Операции с БД выполняются с ретраями на ошибках соединения.
 type DBStorage struct {
 	pool *pgxpool.Pool
 }
 
+// NewDBStorage оборачивает пул соединений в хранилище метрик.
 func NewDBStorage(pool *pgxpool.Pool) *DBStorage {
 	return &DBStorage{pool: pool}
 }
@@ -44,6 +47,8 @@ func isConnectionError(err error) bool {
 	return false
 }
 
+// Update сохраняет метрику upsert'ом: gauge перезаписывает значение,
+// counter прибавляет дельту к накопленной.
 func (s *DBStorage) Update(ctx context.Context, m *Metrics) error {
 	if err := ValidateMetric(m); err != nil {
 		return err
@@ -57,6 +62,7 @@ func (s *DBStorage) Update(ctx context.Context, m *Metrics) error {
 	})
 }
 
+// UpdateBatch сохраняет пакет метрик в одной транзакции.
 func (s *DBStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
 	if len(batch) == 0 {
 		return nil
@@ -90,6 +96,7 @@ func (s *DBStorage) UpdateBatch(ctx context.Context, batch []Metrics) error {
 	})
 }
 
+// Get возвращает метрику по имени и типу или ошибку, если её нет в базе.
 func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metrics, error) {
 	if mType != Gauge && mType != Counter {
 		return nil, fmt.Errorf("unsupported metric type: %s", mType)
@@ -121,6 +128,7 @@ func (s *DBStorage) Get(ctx context.Context, name string, mType string) (*Metric
 	return m, nil
 }
 
+// GetAll возвращает все метрики из базы, упорядоченные по имени.
 func (s *DBStorage) GetAll(ctx context.Context) ([]Metrics, error) {
 	var result []Metrics
 
@@ -168,10 +176,12 @@ func (s *DBStorage) GetAll(ctx context.Context) ([]Metrics, error) {
 	return result, nil
 }
 
+// Ping проверяет доступность базы данных.
 func (s *DBStorage) Ping(ctx context.Context) error {
 	return s.pool.Ping(ctx)
 }
 
+// Close закрывает пул соединений с базой данных.
 func (s *DBStorage) Close() error {
 	s.pool.Close()
 	return nil
