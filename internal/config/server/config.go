@@ -8,6 +8,8 @@ type Config struct {
 	DatabaseDSN       *string `env:"DATABASE_DSN"`
 	Key               *string `env:"KEY"`
 	SignatureRequired *bool   `env:"SIGNATURE_REQUIRED"`
+	AuditFile         *string `env:"AUDIT_FILE"`
+	AuditURL          *string `env:"AUDIT_URL"`
 }
 
 func NewConfig() *Config {

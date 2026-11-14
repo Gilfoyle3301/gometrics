@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
 
+	"github.com/Gilfoyle3301/gometrics/internal/audit"
 	models "github.com/Gilfoyle3301/gometrics/internal/model"
 	"github.com/Gilfoyle3301/gometrics/internal/templates"
 	"github.com/gorilla/mux"
@@ -30,13 +32,38 @@ type PageData struct {
 type Handler struct {
 	storage models.Storage
 	logger  *zap.SugaredLogger
+	audit   *audit.Notifier
 }
 
-func New(s models.Storage, logger *zap.SugaredLogger) *Handler {
-	return &Handler{
+// Option настраивает Handler при создании.
+type Option func(*Handler)
+
+// WithAudit возвращает опцию, подключающую нотификатор аудита.
+// nil отключает аудит: Notify на nil-Notifier безопасен.
+func WithAudit(n *audit.Notifier) Option {
+	return func(h *Handler) {
+		h.audit = n
+	}
+}
+
+// New создаёт хендлер метрик над указанным хранилищем. logger может быть nil.
+func New(s models.Storage, logger *zap.SugaredLogger, opts ...Option) *Handler {
+	h := &Handler{
 		storage: s,
 		logger:  logger,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
@@ -82,6 +109,8 @@ func (h *Handler) UpdateMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.audit.Notify([]string{metricName}, clientIP(r))
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -108,6 +137,8 @@ func (h *Handler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.audit.Notify([]string{metric.ID}, clientIP(r))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -142,6 +173,12 @@ func (h *Handler) UpdateMetricsBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	names := make([]string, 0, len(batch))
+	for i := range batch {
+		names = append(names, batch[i].ID)
+	}
+	h.audit.Notify(names, clientIP(r))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
