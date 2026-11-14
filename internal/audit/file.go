@@ -7,13 +7,13 @@ import (
 )
 
 // FileObserver — приёмник аудита, дописывающий события в конец файла
-// по одной JSON-строке на событие.
+// по одному JSON на строку.
 type FileObserver struct {
 	file *os.File
 }
 
-// NewFileObserver открывает файл path для дозаписи, создавая его при
-// необходимости.
+// NewFileObserver открывает (при необходимости создаёт) файл аудита
+// в режиме добавления.
 func NewFileObserver(path string) (*FileObserver, error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -22,7 +22,7 @@ func NewFileObserver(path string) (*FileObserver, error) {
 	return &FileObserver{file: f}, nil
 }
 
-// Update дописывает событие в файл одной JSON-строкой с переводом строки.
+// Update сериализует событие в JSON и дописывает его новой строкой в файл.
 func (o *FileObserver) Update(e Event) error {
 	data, err := json.Marshal(e)
 	if err != nil {

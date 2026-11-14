@@ -5,8 +5,12 @@ import (
 	"time"
 )
 
+// RetryDelays — задержки между повторными попытками операций с базой данных.
 var RetryDelays = []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
 
+// DoWithRetries выполняет op и при ошибке, которую retriable признаёт
+// повторяемой, делает до len(delays) попыток с указанными паузами.
+// Отмена ctx прерывает ожидание очередной попытки.
 func DoWithRetries(
 	ctx context.Context,
 	delays []time.Duration,
