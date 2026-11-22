@@ -1,3 +1,5 @@
+// Package server содержит конфигурацию сервера метрик,
+// заполняемую из переменных окружения.
 package server
 
 // Config — конфигурация сервера, заполняемая из переменных окружения.
@@ -13,6 +15,8 @@ type Config struct {
 	SignatureRequired *bool   `env:"SIGNATURE_REQUIRED"`
 	AuditFile         *string `env:"AUDIT_FILE"`
 	AuditURL          *string `env:"AUDIT_URL"`
+	CryptoKey         *string `env:"CRYPTO_KEY"`
+	Config            *string `env:"CONFIG"`
 }
 
 // NewConfig создаёт пустой конфиг для последующего разбора переменных окружения.

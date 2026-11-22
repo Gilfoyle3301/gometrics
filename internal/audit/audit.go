@@ -1,11 +1,12 @@
-// Package audit реализует аудит запросов сервера метрик: события
-// обрабатываются по паттерну «наблюдатель» и доставляются в подключённые
-// приёмники (файл, URL).
+// Package audit реализует аудит запросов по паттерну «Наблюдатель»:
+// после успешного сохранения метрик событие аудита рассылается
+// во все подключённые приёмники (файл, удалённый URL).
 package audit
 
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -15,6 +16,10 @@ import (
 // в буфер, поэтому при переполнении событие отбрасывается, а не блокирует
 // запросную горутину.
 const eventQueueSize = 1024
+
+// drainTimeout — предельное время дренажа очереди при Close:
+// даже если наблюдатели зависли, шатдаун сервера не растянется на часы.
+const drainTimeout = 5 * time.Second
 
 // Event — событие аудита: unix-время, имена полученных метрик
 // и IP-адрес входящего запроса.
@@ -41,6 +46,7 @@ type Notifier struct {
 	quit      chan struct{}
 	closeOnce sync.Once
 	wg        sync.WaitGroup
+	closed    atomic.Bool
 }
 
 // NewNotifier создаёт нотификатор с указанными наблюдателями и запускает
@@ -68,10 +74,13 @@ func (n *Notifier) run() {
 		case event := <-n.events:
 			n.dispatch(event)
 		case <-n.quit:
+			deadline := time.After(drainTimeout)
 			for {
 				select {
 				case event := <-n.events:
-					n.dispatch(event)
+					go n.dispatch(event)
+				case <-deadline:
+					return
 				default:
 					return
 				}
@@ -90,9 +99,19 @@ func (n *Notifier) dispatch(event Event) {
 
 // Notify ставит в очередь событие аудита об обновлении метрик metricNames
 // клиентом ipAddress. При переполненной очереди событие отбрасывается
-// с предупреждением в лог.
+// с предупреждением в лог. После вызова Close событие отбрасывается
+// с предупреждением в лог — вызывающий код должен остановить продюсеров
+// до вызова Close.
 func (n *Notifier) Notify(metricNames []string, ipAddress string) {
 	if n == nil {
+		return
+	}
+
+	if n.closed.Load() {
+		if n.logger != nil {
+			n.logger.Warnw("audit event dropped: notifier is closed",
+				"metrics", metricNames, "ip_address", ipAddress)
+		}
 		return
 	}
 
@@ -112,9 +131,10 @@ func (n *Notifier) Notify(metricNames []string, ipAddress string) {
 	}
 }
 
-// Close останавливает горутину рассылки, дожидается обработки уже
-// поставленных в очередь событий и закрывает всех наблюдателей, объединяя
-// ошибки. Повторный вызов возвращает nil.
+// Close завершает рассылку: устанавливает флаг закрытия (новые события
+// отбрасываются), дренирует очередь не дольше drainTimeout, дожидается
+// завершения горутины и закрывает наблюдателей, объединяя ошибки.
+// Повторный вызов возвращает nil.
 func (n *Notifier) Close() error {
 	if n == nil {
 		return nil
@@ -122,8 +142,19 @@ func (n *Notifier) Close() error {
 
 	var err error
 	n.closeOnce.Do(func() {
+		n.closed.Store(true)
 		close(n.quit)
-		n.wg.Wait()
+
+		done := make(chan struct{})
+		go func() {
+			n.wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(2 * drainTimeout):
+		}
 
 		var errs []error
 		for _, o := range n.observers {
