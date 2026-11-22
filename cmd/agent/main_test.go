@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -428,4 +430,62 @@ func TestAgentConcurrentCollectAndSend(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+}
+
+func TestSendMetricsEncrypted(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	const signKey = "secret"
+
+	var (
+		mu       sync.Mutex
+		received []models.Metrics
+		badCount int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+
+		plain, decryptErr := shared.DecryptRSA(key, body)
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		if decryptErr != nil {
+			badCount++
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get(shared.HashHeader) != shared.CalcHash(body, signKey) {
+			badCount++
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		var m models.Metrics
+		if jsonErr := json.Unmarshal(plain, &m); jsonErr != nil {
+			badCount++
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received = append(received, m)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a := NewAgent(server.URL, signKey, 1).WithPublicKey(&key.PublicKey)
+	a.updateGauge("Alloc", 123.45)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	a.reportMetrics(context.Background(), client)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, badCount, "server must decrypt the body and verify the hash of the ciphertext")
+	require.Len(t, received, 1)
+	assert.Equal(t, "Alloc", received[0].ID)
+	require.NotNil(t, received[0].Value)
+	assert.Equal(t, 123.45, *received[0].Value)
 }
