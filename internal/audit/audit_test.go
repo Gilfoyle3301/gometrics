@@ -11,22 +11,38 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type fakeObserver struct {
+	mu       sync.Mutex
 	events   []Event
 	closeErr error
 }
 
 func (o *fakeObserver) Update(e Event) error {
+	o.mu.Lock()
 	o.events = append(o.events, e)
+	o.mu.Unlock()
 	return nil
 }
 
 func (o *fakeObserver) Close() error { return o.closeErr }
+
+func (o *fakeObserver) len() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.events)
+}
+
+func (o *fakeObserver) event(i int) Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.events[i]
+}
 
 func TestFileObserverAppendsJSONLines(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.log")
@@ -120,12 +136,16 @@ func TestNotifierDispatchesToAllObservers(t *testing.T) {
 	notifier.Notify([]string{"Alloc", "Frees"}, "192.168.0.42")
 	require.NoError(t, notifier.Close())
 
-	require.Len(t, first.events, 1)
-	require.Len(t, second.events, 1)
-	assert.Equal(t, first.events[0], second.events[0])
-	assert.Equal(t, []string{"Alloc", "Frees"}, first.events[0].Metrics)
-	assert.Equal(t, "192.168.0.42", first.events[0].IPAddress)
-	assert.Positive(t, first.events[0].Timestamp)
+	require.Eventually(t, func() bool {
+		return first.len() == 1 && second.len() == 1
+	}, time.Second, 10*time.Millisecond)
+
+	e1 := first.event(0)
+	e2 := second.event(0)
+	assert.Equal(t, e1, e2)
+	assert.Equal(t, []string{"Alloc", "Frees"}, e1.Metrics)
+	assert.Equal(t, "192.168.0.42", e1.IPAddress)
+	assert.Positive(t, e1.Timestamp)
 }
 
 func TestNotifierConcurrentNotify(t *testing.T) {
@@ -145,7 +165,9 @@ func TestNotifierConcurrentNotify(t *testing.T) {
 	wg.Wait()
 	require.NoError(t, notifier.Close())
 
-	assert.Len(t, observer.events, sends)
+	require.Eventually(t, func() bool {
+		return observer.len() == sends
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestNilNotifier(t *testing.T) {
@@ -161,4 +183,51 @@ func TestNotifierCloseAggregatesErrors(t *testing.T) {
 	notifier := NewNotifier(nil, &fakeObserver{}, &fakeObserver{closeErr: errors.New("close failed")})
 	assert.Error(t, notifier.Close())
 	assert.NoError(t, notifier.Close())
+}
+
+type blockingObserver struct {
+	started chan struct{}
+	block   chan struct{}
+	once    sync.Once
+}
+
+func (o *blockingObserver) Update(e Event) error {
+	o.once.Do(func() { close(o.started) })
+	<-o.block
+	return nil
+}
+
+func (o *blockingObserver) Close() error { return nil }
+
+func TestNotifierCloseDrainTimeout(t *testing.T) {
+	ob := &blockingObserver{
+		started: make(chan struct{}),
+		block:   make(chan struct{}),
+	}
+	notifier := NewNotifier(nil, ob)
+
+	notifier.Notify([]string{"m"}, "127.0.0.1")
+	<-ob.started
+
+	for i := 0; i < 5; i++ {
+		notifier.Notify([]string{"m"}, "127.0.0.1")
+	}
+
+	start := time.Now()
+	err := notifier.Close()
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, elapsed, 3*drainTimeout)
+
+	close(ob.block)
+}
+
+func TestNotifierNotifyAfterClose(t *testing.T) {
+	notifier := NewNotifier(nil, &fakeObserver{})
+	require.NoError(t, notifier.Close())
+
+	assert.NotPanics(t, func() {
+		notifier.Notify([]string{"Alloc"}, "127.0.0.1")
+	})
 }

@@ -27,7 +27,7 @@ func NewDBHandler(db DBPinger, logger *zap.SugaredLogger) *DBHandler {
 func (h *DBHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.Ping(r.Context()); err != nil {
 		if h.logger != nil {
-			h.logger.Error("database is unavailable", zap.Error(err))
+			h.logger.Errorw("database is unavailable", "error", err)
 		}
 		http.Error(w, "database is unavailable", http.StatusInternalServerError)
 		return
